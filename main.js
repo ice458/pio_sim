@@ -47,6 +47,7 @@ const btnClearIrq = document.getElementById('btn-clear-irq');
 const canvas = document.getElementById('timing-chart');
 const ctx = canvas.getContext('2d');
 const timingChartTitle = document.getElementById('timing-chart-title');
+const programDisplay = document.getElementById('program-display');
 
 let runInterval = null;
 
@@ -131,6 +132,28 @@ function assembleAndReset() {
         const source = codeEditor.value;
         const program = assembler.assemble(source);
         emulator.loadProgram(program);
+        emulator.programMap = program.programMap;
+        
+        // Populate Program Display
+        programDisplay.innerHTML = '';
+        programDisplay.style.display = 'block';
+        
+        program.programMap.forEach(item => {
+            const div = document.createElement('div');
+            div.className = 'program-line';
+            div.id = `prog-line-${item.pc}`;
+            
+            const pcSpan = document.createElement('span');
+            pcSpan.className = 'pc';
+            pcSpan.textContent = item.pc.toString().padStart(2, '0');
+            
+            const codeSpan = document.createElement('span');
+            codeSpan.textContent = item.text;
+            
+            div.appendChild(pcSpan);
+            div.appendChild(codeSpan);
+            programDisplay.appendChild(div);
+        });
         
         updateConfig();
         
@@ -140,6 +163,7 @@ function assembleAndReset() {
     } catch (e) {
         errorMessage.textContent = e.message;
         console.error(e);
+        programDisplay.style.display = 'none';
     }
 }
 
@@ -262,6 +286,15 @@ function updateUI(isStep = false) {
         } else {
             flag.classList.remove('active');
         }
+    }
+
+    // Highlight current line
+    const activeLines = programDisplay.querySelectorAll('.program-line.active');
+    activeLines.forEach(el => el.classList.remove('active'));
+    
+    const currentLine = document.getElementById(`prog-line-${emulator.pc}`);
+    if (currentLine) {
+        currentLine.classList.add('active');
     }
 
     // Timing Chart

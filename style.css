@@ -235,3 +235,35 @@ button:disabled {
     gap: 10px;
     align-items: center;
 }
+
+.program-display {
+    margin-top: 10px;
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+    padding: 10px;
+    border-radius: 4px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 14px;
+    max-height: 300px;
+    overflow-y: auto;
+    display: none;
+}
+
+.program-line {
+    padding: 2px 5px;
+    white-space: pre;
+}
+
+.program-line.active {
+    background-color: #264f78;
+    color: #fff;
+}
+
+.program-line .pc {
+    color: #858585;
+    margin-right: 15px;
+    display: inline-block;
+    width: 25px;
+    text-align: right;
+    user-select: none;
+}

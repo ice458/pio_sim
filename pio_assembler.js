@@ -45,6 +45,7 @@ class PioAssembler {
 
         // Second pass: generate instructions
         pc = 0;
+        const programMap = [];
         for (let i = 0; i < lines.length; i++) {
             let line = lines[i].trim();
             const commentIndex = line.indexOf(';');
@@ -60,6 +61,11 @@ class PioAssembler {
             try {
                 const instr = this.parseInstruction(line, pc);
                 this.instructions.push(instr);
+                programMap.push({
+                    pc: pc,
+                    line: i + 1,
+                    text: lines[i] // Keep original text including comments for display
+                });
                 pc++;
             } catch (e) {
                 throw new Error(`Line ${i + 1}: ${e.message}`);
@@ -71,7 +77,8 @@ class PioAssembler {
             labels: this.labels,
             wrapTarget: this.wrapTarget,
             wrap: this.wrap,
-            sidesetCount: this.sidesetCount
+            sidesetCount: this.sidesetCount,
+            programMap: programMap
         };
     }
 
