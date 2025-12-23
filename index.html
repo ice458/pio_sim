@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <!-- Consent Mode default (runs before GTM) -->
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag() { dataLayer.push(arguments); }
+        gtag('consent', 'default', {
+            ad_storage: 'denied',
+            analytics_storage: 'denied',
+            ad_user_data: 'denied',
+            ad_personalization: 'denied',
+            wait_for_update: 2000
+        });
+    </script>
+    <!-- Google Analytics cookie domain override (host-only) -->
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag() { dataLayer.push(arguments); }
+        gtag('set', 'cookie_domain', 'none');
+    </script>
+    <!-- Google Tag Manager -->
+    <script>(function (w, d, s, l, i) {
+            w[l] = w[l] || []; w[l].push({
+                'gtm.start':
+                    new Date().getTime(), event: 'gtm.js'
+            }); var f = d.getElementsByTagName(s)[0],
+                j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+                    'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+        })(window, document, 'script', 'dataLayer', 'GTM-MMZ5XH4V');</script>
+    <!-- End Google Tag Manager -->
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RP2040/RP2350 PIO Simulator</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <!-- Google Tag Manager (noscript) -->
+    <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MMZ5XH4V" height="0" width="0"
+            style="display:none;visibility:hidden"></iframe></noscript>
+    <!-- End Google Tag Manager (noscript) -->
+
+    <div class="container">
+        <header>
+            <h1>RP2040/RP2350 PIO Simulator</h1>
+        </header>
+
+        <div class="main-content">
+            <div class="editor-section">
+                <h2>Assembly Code</h2>
+                <textarea id="code-editor" spellcheck="false">
+.program blink
+    pull block
+    out y, 32
+.wrap_target
+    mov x, y
+    set pins, 1   ; Turn LED on
+lp1:
+    jmp x-- lp1   ; Delay for (x + 1) cycles, x is a 32 bit number
+    mov x, y
+    set pins, 0   ; Turn LED off
+lp2:
+    jmp x-- lp2   ; Delay for the same number of cycles again
+.wrap
+                </textarea>
+                <div class="controls">
+                    <button id="btn-assemble">Assemble & Reset</button>
+                    <button id="btn-step">Step</button>
+                    <button id="btn-run-stop">Run</button>
+                    <button id="btn-reset">Reset</button>
+                </div>
+                <div id="error-message" class="error"></div>
+
+                <h3>Pin Configuration</h3>
+                <div class="pin-config">
+                    <div class="config-item">
+                        <label>OUT Base:</label>
+                        <input type="number" id="cfg-out-base" value="0" min="0" max="31">
+                    </div>
+                    <div class="config-item">
+                        <label>SET Base:</label>
+                        <input type="number" id="cfg-set-base" value="0" min="0" max="31">
+                    </div>
+                    <div class="config-item">
+                        <label>SIDESET Base:</label>
+                        <input type="number" id="cfg-sideset-base" value="0" min="0" max="31">
+                    </div>
+                    <div class="config-item">
+                        <label>IN Base:</label>
+                        <input type="number" id="cfg-in-base" value="0" min="0" max="31">
+                    </div>
+                    <div class="config-item">
+                        <label>JMP PIN:</label>
+                        <input type="number" id="cfg-jmp-pin" value="0" min="0" max="31">
+                    </div>
+                </div>
+
+                <h4>Shift & FIFO Control</h4>
+                <div class="pin-config">
+                    <div class="config-item">
+                        <label>IN Shift:</label>
+                        <select id="cfg-in-shift-dir">
+                            <option value="right">Right (MSB)</option>
+                            <option value="left">Left (LSB)</option>
+                        </select>
+                    </div>
+                    <div class="config-item">
+                        <label>OUT Shift:</label>
+                        <select id="cfg-out-shift-dir">
+                            <option value="right">Right (LSB)</option>
+                            <option value="left">Left (MSB)</option>
+                        </select>
+                    </div>
+                    <div style="width: 100%"></div>
+                    <div class="config-item">
+                        <label>Auto Push:</label>
+                        <input type="checkbox" id="cfg-auto-push">
+                        <input type="number" id="cfg-push-thresh" value="32" min="1" max="32" style="width: 40px;">
+                    </div>
+                    <div class="config-item">
+                        <label>Auto Pull:</label>
+                        <input type="checkbox" id="cfg-auto-pull">
+                        <input type="number" id="cfg-pull-thresh" value="32" min="1" max="32" style="width: 40px;">
+                    </div>
+                </div>
+            </div>
+
+            <div class="status-section">
+                <h2>State <span id="status-indicator"
+                        style="font-size: 0.6em; padding: 2px 5px; border-radius: 3px;">STOPPED</span></h2>
+                <div class="registers">
+                    <div class="reg">PC: <span id="reg-pc">0</span></div>
+                    <div class="reg">Clock: <span id="reg-clock">0</span></div>
+                    <div class="reg">X: <span id="reg-x">0x00000000</span></div>
+                    <div class="reg">Y: <span id="reg-y">0x00000000</span></div>
+                    <div class="reg">OSR: <span id="reg-osr">0x00000000</span> (<span id="reg-osr-count">0</span>)</div>
+                    <div class="reg">ISR: <span id="reg-isr">0x00000000</span> (<span id="reg-isr-count">0</span>)</div>
+                </div>
+
+                <h3>FIFOs</h3>
+                <div class="fifos">
+                    <div class="fifo-box">
+                        <h4>TX FIFO</h4>
+                        <input type="text" id="tx-input" placeholder="Hex value (e.g. 0xFF)">
+                        <button id="btn-push-tx">Push</button>
+                        <ul id="tx-fifo-list"></ul>
+                    </div>
+                    <div class="fifo-box">
+                        <h4>RX FIFO</h4>
+                        <ul id="rx-fifo-list"></ul>
+                    </div>
+                </div>
+
+                <div class="pin-output">
+                    <h4>GPIO State (32-bit)</h4>
+                    <div class="hex-display">Value: <span id="gpio-hex-val">0x00000000</span></div>
+                    <div class="gpio-indicators" id="gpio-indicators"> </div>
+                </div>
+
+                <h3 id="timing-chart-title">Timing Chart (GPIO 0-3)</h3>
+                <canvas id="timing-chart" width="600" height="200"></canvas>
+
+                <h3>Interrupts (IRQ)</h3>
+                <div class="irq-controls">
+                    <div class="irq-flags" id="irq-flags">
+                        <!-- IRQ 0-7 flags -->
+                    </div>
+                    <div class="irq-actions">
+                        <select id="irq-select">
+                            <option value="0">IRQ 0</option>
+                            <option value="1">IRQ 1</option>
+                            <option value="2">IRQ 2</option>
+                            <option value="3">IRQ 3</option>
+                            <option value="4">IRQ 4</option>
+                            <option value="5">IRQ 5</option>
+                            <option value="6">IRQ 6</option>
+                            <option value="7">IRQ 7</option>
+                        </select>
+                        <button id="btn-set-irq">Set</button>
+                        <button id="btn-clear-irq">Clear</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <footer
+            style="margin-top: 20px; padding-top: 10px; border-top: 1px solid #ccc; text-align: center; font-size: 0.9em;">
+            <p>
+                <a href="../../index.html">ice458の物置き</a> |
+                <a href="../../tools.html">Webツール一覧</a> |
+                <a href="../../privacy.html">プライバシーポリシー</a>
+            </p>
+        </footer>
+    </div>
+
+    <script src="pio_assembler.js"></script>
+    <script src="pio_emulator.js"></script>
+    <script src="main.js"></script>
+    <script src="/consent.js" defer></script>
+</body>
+
+</html>
