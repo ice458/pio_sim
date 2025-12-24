@@ -27,6 +27,7 @@ const rxFifoList = document.getElementById('rx-fifo-list');
 
 const cfgOutBase = document.getElementById('cfg-out-base');
 const cfgSetBase = document.getElementById('cfg-set-base');
+const cfgSetCount = document.getElementById('cfg-set-count');
 const cfgSidesetBase = document.getElementById('cfg-sideset-base');
 const cfgInBase = document.getElementById('cfg-in-base');
 const cfgJmpPin = document.getElementById('cfg-jmp-pin');
@@ -212,6 +213,11 @@ exampleSelect.addEventListener('change', () => {
         // Apply config
         cfgOutBase.value = ex.config.outBase;
         cfgSetBase.value = ex.config.setBase;
+        if (ex.config.setCount !== undefined) {
+            cfgSetCount.value = ex.config.setCount;
+        } else {
+            cfgSetCount.value = 5;
+        }
         cfgSidesetBase.value = ex.config.sidesetBase;
         cfgInBase.value = ex.config.inBase;
         cfgJmpPin.value = ex.config.jmpPin;
@@ -231,6 +237,7 @@ exampleSelect.addEventListener('change', () => {
 function updateConfig() {
     emulator.outBase = parseInt(cfgOutBase.value);
     emulator.setBase = parseInt(cfgSetBase.value);
+    emulator.setCount = parseInt(cfgSetCount.value);
     emulator.sidesetBase = parseInt(cfgSidesetBase.value);
     emulator.inBase = parseInt(cfgInBase.value);
     emulator.jmpPin = parseInt(cfgJmpPin.value);
@@ -244,6 +251,7 @@ function updateConfig() {
 
 cfgOutBase.addEventListener('change', updateConfig);
 cfgSetBase.addEventListener('change', updateConfig);
+cfgSetCount.addEventListener('change', updateConfig);
 cfgSidesetBase.addEventListener('change', updateConfig);
 cfgInBase.addEventListener('change', updateConfig);
 cfgJmpPin.addEventListener('change', updateConfig);
