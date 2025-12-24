@@ -15,6 +15,9 @@ class PioAssembler {
         this.instructions = [];
         this.wrapTarget = -1;
         this.wrap = -1;
+        this.sidesetCount = 0;
+        this.sidesetOpt = false;
+        this.sidesetPindirs = false;
         
         const lines = sourceCode.split('\n');
         let pc = 0;
@@ -90,6 +93,8 @@ class PioAssembler {
             wrapTarget: this.wrapTarget,
             wrap: this.wrap,
             sidesetCount: this.sidesetCount,
+            sidesetOpt: this.sidesetOpt,
+            sidesetPindirs: this.sidesetPindirs,
             programMap: programMap
         };
     }

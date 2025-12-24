@@ -30,6 +30,7 @@ class PioEmulator {
         this.inBase = 0;
         this.jmpPin = 0;
         // this.sidesetCount = 5; // Do not reset sidesetCount here, it is set by loadProgram
+        this.setCount = 5; // Default SET count
         
         this.inShiftDir = 'right'; // 'right' or 'left'
         this.outShiftDir = 'right'; // 'right' or 'left'
@@ -55,6 +56,11 @@ class PioEmulator {
         this.wrap = programData.wrap;
         if (programData.sidesetCount !== undefined) {
             this.sidesetCount = programData.sidesetCount;
+        }
+        this.sidesetOpt = programData.sidesetOpt || false;
+        this.sidesetPindirs = programData.sidesetPindirs || false;
+        if (programData.setCount !== undefined) {
+            this.setCount = programData.setCount;
         }
         this.reset();
     }
@@ -119,9 +125,48 @@ class PioEmulator {
         }
 
         // Execute Side-set
-        if (instr.sideSet !== null && instr.sideSet !== undefined) {
-            const mask = (1 << this.sidesetCount) - 1; 
-            this.pins = (this.pins & ~(mask << this.sidesetBase)) | ((instr.sideSet & mask) << this.sidesetBase);
+        let sideSetVal = instr.sideSet;
+        let applySideSet = false;
+
+        if (this.sidesetOpt) {
+            // Rule 3 (Side-Set): Optional
+            // Only apply if specified in the instruction.
+            if (sideSetVal !== null && sideSetVal !== undefined) {
+                applySideSet = true;
+            }
+        } else {
+            // Rule 3 (Side-Set): Mandatory
+            // Always apply. If not specified, default to 0.
+            applySideSet = true;
+            if (sideSetVal === null || sideSetVal === undefined) {
+                sideSetVal = 0;
+            }
+        }
+
+        if (applySideSet) {
+            const val = sideSetVal;
+            for (let i = 0; i < this.sidesetCount; i++) {
+                const pin = (this.sidesetBase + i) % 32; // Rule 1: Wrap at 32
+                const bit = (val >> i) & 1;
+                
+                if (this.sidesetPindirs) {
+                    // Affects pindirs
+                    if (bit) {
+                        this.pindirs |= (1 << pin);
+                    } else {
+                        this.pindirs &= ~(1 << pin);
+                    }
+                    this.pindirs = this.pindirs >>> 0; // Rule 3: Integer Safety
+                } else {
+                    // Affects pins
+                    if (bit) {
+                        this.pins |= (1 << pin);
+                    } else {
+                        this.pins &= ~(1 << pin);
+                    }
+                    this.pins = this.pins >>> 0; // Rule 3: Integer Safety
+                }
+            }
         }
 
         let nextPc = this.pc + 1;
@@ -207,7 +252,7 @@ class PioEmulator {
                 break;
             case 'x!=y': conditionMet = (this.x !== this.y); break;
             case 'pin': conditionMet = (this.getPinState(this.jmpPin) === 1); break;
-            case '!osre': conditionMet = (this.osrCount < 32); break; // OSR not empty
+            case '!osre': conditionMet = (this.osrCount < this.pullThresh); break; // OSR not empty (count < threshold)
         }
 
         if (conditionMet) {
@@ -368,16 +413,31 @@ class PioEmulator {
 
         switch (instr.dest) {
             case 'pins':
-                // Use outBase
-                const pinMask = mask; 
-                this.pins = (this.pins & ~(pinMask << this.outBase)) | ((data & pinMask) << this.outBase);
+                for (let i = 0; i < bitCount; i++) {
+                    const pin = (this.outBase + i) % 32; // Rule 1: Wrap at 32
+                    const bit = (data >> i) & 1;
+                    if (bit) {
+                        this.pins |= (1 << pin);
+                    } else {
+                        this.pins &= ~(1 << pin);
+                    }
+                }
+                this.pins = this.pins >>> 0; // Rule 3: Integer Safety
                 break;
             case 'x': this.x = data; break;
             case 'y': this.y = data; break;
             case 'null': break; // discard
             case 'pindirs':
-                const dirMask = mask;
-                this.pindirs = (this.pindirs & ~dirMask) | (data & dirMask);
+                for (let i = 0; i < bitCount; i++) {
+                    const pin = (this.outBase + i) % 32; // Rule 1: Wrap at 32
+                    const bit = (data >> i) & 1;
+                    if (bit) {
+                        this.pindirs |= (1 << pin);
+                    } else {
+                        this.pindirs &= ~(1 << pin);
+                    }
+                }
+                this.pindirs = this.pindirs >>> 0; // Rule 3: Integer Safety
                 break;
             case 'pc': 
                 this.pc = data - 1; 
@@ -465,7 +525,14 @@ class PioEmulator {
             case 'x': val = this.x; break;
             case 'y': val = this.y; break;
             case 'null': val = 0; break;
-            case 'status': val = 0xFFFFFFFF; break; // Simplified
+            case 'status': 
+                // Rule 4: MOV STATUS
+                if (this.txFifo.length < 4) {
+                    val = 0xFFFFFFFF;
+                } else {
+                    val = 0;
+                }
+                break;
             case 'isr': val = this.isr; break;
             case 'osr': val = this.osr; break;
         }
@@ -486,8 +553,8 @@ class PioEmulator {
             case 'y': this.y = val; break;
             case 'exec': break; // TODO
             case 'pc': this.pc = val - 1; break;
-            case 'isr': this.isr = val; this.isrCount = 32; break;
-            case 'osr': this.osr = val; this.osrCount = 32; break;
+            case 'isr': this.isr = val; this.isrCount = 0; break; // Reset count to 0
+            case 'osr': this.osr = val; this.osrCount = 0; break; // Reset count to 0
         }
     }
     
@@ -522,16 +589,30 @@ class PioEmulator {
         const val = instr.value;
         switch (instr.dest) {
             case 'pins':
-                // Set pins relative to SET_BASE.
-                // Assume 5 bits max (0-31)
-                const mask = 0x1F; // 5 bits
-                this.pins = (this.pins & ~(mask << this.setBase)) | ((val & mask) << this.setBase);
+                for (let i = 0; i < this.setCount; i++) {
+                    const pin = (this.setBase + i) % 32; // Rule 1: Wrap at 32
+                    const bit = (val >> i) & 1;
+                    if (bit) {
+                        this.pins |= (1 << pin);
+                    } else {
+                        this.pins &= ~(1 << pin);
+                    }
+                }
+                this.pins = this.pins >>> 0; // Rule 3: Integer Safety
                 break;
             case 'x': this.x = val; break;
             case 'y': this.y = val; break;
             case 'pindirs':
-                const dirMask = 0x1F;
-                this.pindirs = (this.pindirs & ~dirMask) | (val & dirMask);
+                for (let i = 0; i < this.setCount; i++) {
+                    const pin = (this.setBase + i) % 32; // Rule 1: Wrap at 32
+                    const bit = (val >> i) & 1;
+                    if (bit) {
+                        this.pindirs |= (1 << pin);
+                    } else {
+                        this.pindirs &= ~(1 << pin);
+                    }
+                }
+                this.pindirs = this.pindirs >>> 0; // Rule 3: Integer Safety
                 break;
         }
     }
