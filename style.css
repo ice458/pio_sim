@@ -7,7 +7,7 @@ body {
 }
 
 .container {
-    max-width: 1200px;
+    max-width: 1400px;
     margin: 0 auto;
     padding: 20px;
 }
@@ -30,7 +30,7 @@ header {
 }
 
 .status-section {
-    flex: 1;
+    flex: 1.4;
     background-color: #fff;
     padding: 20px;
     border-radius: 8px;
@@ -132,14 +132,17 @@ button:disabled {
     margin-top: 10px;
 }
 
+.control-panel {
+    background-color: #f9f9f9;
+    padding: 10px;
+    border-radius: 4px;
+    margin-bottom: 15px;
+}
+
 .pin-config {
     display: flex;
     flex-wrap: wrap;
     gap: 10px;
-    margin-bottom: 15px;
-    background-color: #f9f9f9;
-    padding: 10px;
-    border-radius: 4px;
 }
 
 .config-item {
@@ -153,9 +156,18 @@ button:disabled {
     white-space: nowrap;
 }
 
-.config-item input, .config-item select {
+.config-item input:not([type="checkbox"]) {
     width: 60px;
     padding: 2px;
+}
+
+.config-item select {
+    width: auto;
+    padding: 2px;
+}
+
+.config-item input[type="checkbox"] {
+    margin: 0;
 }
 
 .pin-output {
@@ -188,7 +200,27 @@ button:disabled {
     justify-content: center;
     font-size: 9px;
     color: #666;
-    cursor: default;
+    cursor: pointer;
+    user-select: none;
+}
+
+.gpio-bit.on {
+    background-color: #4caf50;
+    color: white;
+    border-color: #2e7d32;
+}
+
+.gpio-bit.input {
+    border-style: dashed;
+    border-color: #2196f3;
+    background-color: #e3f2fd;
+    color: #333;
+}
+
+.gpio-bit.input.on {
+    background-color: #2196f3;
+    color: white;
+    border-color: #1565c0;
 }
 
 .gpio-bit:nth-child(8n) {
@@ -197,12 +229,6 @@ button:disabled {
 
 .gpio-bit:nth-child(16n) {
     margin-right: 0;
-}
-
-.gpio-bit.on {
-    background-color: #4caf50;
-    color: white;
-    border-color: #2e7d32;
 }
 
 .irq-controls {
@@ -222,18 +248,19 @@ button:disabled {
     border: 1px solid #ccc;
     border-radius: 4px;
     font-size: 12px;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+
+.irq-flag:hover {
+    background-color: #e0e0e0;
 }
 
 .irq-flag.active {
     background-color: #ff9800; /* Orange */
     color: white;
     border-color: #f57c00;
-}
-
-.irq-actions {
-    display: flex;
-    gap: 10px;
-    align-items: center;
 }
 
 .program-display {
@@ -266,4 +293,14 @@ button:disabled {
     width: 25px;
     text-align: right;
     user-select: none;
+}
+
+#timing-pin-selector .gpio-bit {
+    cursor: pointer;
+}
+
+#timing-pin-selector .gpio-bit.selected {
+    background-color: #2196f3;
+    color: white;
+    border-color: #1976d2;
 }

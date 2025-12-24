@@ -21,14 +21,15 @@ class PioEmulator {
         this.clock = 0;
         this.delay = 0; // Cycles to wait
         
-        this.pins = 0; // 32-bit GPIO state
+        this.pins = 0; // 32-bit GPIO state (Output latch)
+        this.inputs = 0; // 32-bit GPIO input state (External signals)
         this.pindirs = 0; // 32-bit GPIO direction (1=out, 0=in)
         this.outBase = 0;
         this.setBase = 0;
         this.sidesetBase = 0;
         this.inBase = 0;
         this.jmpPin = 0;
-        this.sidesetCount = 5; // Default max
+        // this.sidesetCount = 5; // Do not reset sidesetCount here, it is set by loadProgram
         
         this.inShiftDir = 'right'; // 'right' or 'left'
         this.outShiftDir = 'right'; // 'right' or 'left'
@@ -56,6 +57,21 @@ class PioEmulator {
             this.sidesetCount = programData.sidesetCount;
         }
         this.reset();
+    }
+
+    getPinState(pin) {
+        pin = pin & 0x1F;
+        const isOut = (this.pindirs >> pin) & 1;
+        if (isOut) {
+            return (this.pins >> pin) & 1;
+        } else {
+            return (this.inputs >> pin) & 1;
+        }
+    }
+
+    getAllPinStates() {
+        // Combine outputs and inputs based on direction
+        return (this.pins & this.pindirs) | (this.inputs & ~this.pindirs);
     }
 
     pushTx(value) {
@@ -104,7 +120,7 @@ class PioEmulator {
 
         // Execute Side-set
         if (instr.sideSet !== null && instr.sideSet !== undefined) {
-            const mask = 0x1F; 
+            const mask = (1 << this.sidesetCount) - 1; 
             this.pins = (this.pins & ~(mask << this.sidesetBase)) | ((instr.sideSet & mask) << this.sidesetBase);
         }
 
@@ -190,7 +206,7 @@ class PioEmulator {
                 }
                 break;
             case 'x!=y': conditionMet = (this.x !== this.y); break;
-            case 'pin': conditionMet = ((this.pins >> this.jmpPin) & 1) === 1; break;
+            case 'pin': conditionMet = (this.getPinState(this.jmpPin) === 1); break;
             case '!osre': conditionMet = (this.osrCount < 32); break; // OSR not empty
         }
 
@@ -205,14 +221,13 @@ class PioEmulator {
         let val = 0;
         if (instr.source === 'gpio') {
             // Read from pins (output or input simulation)
-            // For simulation, we just read current pin state
             const pin = parseInt(instr.index);
-            val = (this.pins >> pin) & 1;
+            val = this.getPinState(pin);
         } else if (instr.source === 'pin') {
             // wait 1 pin 0 -> wait for IN_BASE + 0
             const index = parseInt(instr.index);
             const pin = (this.inBase + index) & 0x1F; // Wrap 32
-            val = (this.pins >> pin) & 1;
+            val = this.getPinState(pin);
         } else if (instr.source === 'irq') {
             // wait 1 irq 2
             const index = parseInt(instr.index) & 7;
@@ -234,7 +249,29 @@ class PioEmulator {
         let val = 0;
         if (instr.source === 'pins') {
             // Use inBase
-            val = this.pins >>> this.inBase;
+            // val = this.pins >>> this.inBase; // Old: only read output latch
+            
+            // New: Read actual pin states
+            const allPins = this.getAllPinStates();
+            val = allPins >>> this.inBase;
+            
+            // Handle wrap if needed (though >>> handles shift, we might need to wrap around if inBase + bitCount > 32)
+            // But standard behavior for 'pins' source is just shifting.
+            // Wait, if inBase is 30 and we read 3 bits, do we get pin 30, 31, 0?
+            // RP2040 PIO: "The state of the pins is shifted into the ISR... The least significant bit of the data is the state of the pin specified by IN_BASE."
+            // It doesn't explicitly say it wraps for IN source, but usually pin mappings wrap.
+            // However, simple shift is likely sufficient for now unless we need perfect wrap emulation for IN PINS.
+            // Actually, let's implement wrap correctly for IN PINS just in case.
+            
+            let constructedVal = 0;
+            for(let i=0; i<32; i++) {
+                const pin = (this.inBase + i) & 0x1F;
+                if (this.getPinState(pin)) {
+                    constructedVal |= (1 << i);
+                }
+            }
+            val = constructedVal;
+            
         } else if (instr.source === 'x') {
             val = this.x;
         } else if (instr.source === 'y') {

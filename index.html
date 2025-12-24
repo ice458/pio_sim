@@ -51,19 +51,21 @@
         <div class="main-content">
             <div class="editor-section">
                 <h2>Assembly Code</h2>
+                <div style="margin-bottom: 10px;">
+                    <label>Load Example:</label>
+                    <select id="example-select">
+                        <option value="">-- Select Example --</option>
+                        <option value="blink">Simple Blink</option>
+                        <option value="pwm">PWM (LED Fade)</option>
+                        <option value="feature_test">Feature Test (Wait/Jmp Pin)</option>
+                    </select>
+                </div>
                 <textarea id="code-editor" spellcheck="false">
 .program blink
-    pull block
-    out y, 32
+
 .wrap_target
-    mov x, y
-    set pins, 1   ; Turn LED on
-lp1:
-    jmp x-- lp1   ; Delay for (x + 1) cycles, x is a 32 bit number
-    mov x, y
-    set pins, 0   ; Turn LED off
-lp2:
-    jmp x-- lp2   ; Delay for the same number of cycles again
+    set pins, 1   ; Turn on
+    set pins, 0   ; Turn off
 .wrap
                 </textarea>
                 <div class="controls">
@@ -77,7 +79,7 @@ lp2:
                 <div id="program-display" class="program-display"></div>
 
                 <h3>Pin Configuration</h3>
-                <div class="pin-config">
+                <div class="control-panel pin-config">
                     <div class="config-item">
                         <label>OUT Base:</label>
                         <input type="number" id="cfg-out-base" value="0" min="0" max="31">
@@ -88,7 +90,7 @@ lp2:
                     </div>
                     <div class="config-item">
                         <label>SIDESET Base:</label>
-                        <input type="number" id="cfg-sideset-base" value="0" min="0" max="31">
+                        <input type="number" id="cfg-sideset-base" value="4" min="0" max="31">
                     </div>
                     <div class="config-item">
                         <label>IN Base:</label>
@@ -96,12 +98,16 @@ lp2:
                     </div>
                     <div class="config-item">
                         <label>JMP PIN:</label>
-                        <input type="number" id="cfg-jmp-pin" value="0" min="0" max="31">
+                        <input type="number" id="cfg-jmp-pin" value="5" min="0" max="31">
                     </div>
                 </div>
-
-                <h4>Shift & FIFO Control</h4>
-                <div class="pin-config">
+                <h3>Timing Chart Pins</h3>
+                <div class="control-panel">
+                    <div style="font-size: 0.8em; color: #666; margin-bottom: 5px;">Select pins to display in timing chart.</div>
+                    <div class="gpio-indicators" id="timing-pin-selector"></div>
+                </div>
+                <h3>Shift & FIFO Control</h3>
+                <div class="control-panel pin-config">
                     <div class="config-item">
                         <label>IN Shift:</label>
                         <select id="cfg-in-shift-dir">
@@ -117,7 +123,7 @@ lp2:
                         </select>
                     </div>
                     <div style="width: 100%"></div>
-                    <div class="config-item">
+                    <div class="config-item" style="margin-right: 20px;">
                         <label>Auto Push:</label>
                         <input type="checkbox" id="cfg-auto-push">
                         <input type="number" id="cfg-push-thresh" value="32" min="1" max="32" style="width: 40px;">
@@ -159,6 +165,14 @@ lp2:
                 <div class="pin-output">
                     <h4>GPIO State (32-bit)</h4>
                     <div class="hex-display">Value: <span id="gpio-hex-val">0x00000000</span></div>
+                    <div style="font-size: 0.8em; color: #666; margin-bottom: 5px;">
+                        Click: Toggle Input Value.<br>Right-Click/Shift+Click: Toggle Direction (In/Out).
+                        <br>
+                        <span style="border: 1px solid #4caf50; background: #4caf50; width: 10px; height: 10px; display: inline-block;"></span> Output High
+                        <span style="border: 1px solid #ccc; background: #eee; width: 10px; height: 10px; display: inline-block;"></span> Output Low
+                        <span style="border: 1px dashed #2196f3; background: #e3f2fd; width: 10px; height: 10px; display: inline-block;"></span> Input Low
+                        <span style="border: 1px dashed #2196f3; background: #2196f3; width: 10px; height: 10px; display: inline-block;"></span> Input High
+                    </div>
                     <div class="gpio-indicators" id="gpio-indicators"> </div>
                 </div>
 
@@ -166,23 +180,12 @@ lp2:
                 <canvas id="timing-chart" width="600" height="200"></canvas>
 
                 <h3>Interrupts (IRQ)</h3>
+                <div style="font-size: 0.8em; color: #666; margin-bottom: 5px;">
+                    Click to toggle IRQ flag.
+                </div>
                 <div class="irq-controls">
                     <div class="irq-flags" id="irq-flags">
                         <!-- IRQ 0-7 flags -->
-                    </div>
-                    <div class="irq-actions">
-                        <select id="irq-select">
-                            <option value="0">IRQ 0</option>
-                            <option value="1">IRQ 1</option>
-                            <option value="2">IRQ 2</option>
-                            <option value="3">IRQ 3</option>
-                            <option value="4">IRQ 4</option>
-                            <option value="5">IRQ 5</option>
-                            <option value="6">IRQ 6</option>
-                            <option value="7">IRQ 7</option>
-                        </select>
-                        <button id="btn-set-irq">Set</button>
-                        <button id="btn-clear-irq">Clear</button>
                     </div>
                 </div>
             </div>

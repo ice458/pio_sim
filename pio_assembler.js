@@ -29,11 +29,18 @@ class PioAssembler {
             }
             if (line === '') continue;
 
+            // Handle label if present
+            const colonIndex = line.indexOf(':');
+            if (colonIndex !== -1) {
+                const labelName = line.substring(0, colonIndex).trim();
+                this.labels[labelName] = pc;
+                line = line.substring(colonIndex + 1).trim();
+            }
+
+            if (line === '') continue;
+
             if (line.startsWith('.')) {
                 this.handleDirective(line, pc);
-            } else if (line.endsWith(':')) {
-                const labelName = line.substring(0, line.length - 1).trim();
-                this.labels[labelName] = pc;
             } else {
                 pc++;
             }
@@ -54,9 +61,14 @@ class PioAssembler {
             }
             if (line === '') continue;
 
-            if (line.startsWith('.') || line.endsWith(':')) {
-                continue;
+            // Handle label stripping
+            const colonIndex = line.indexOf(':');
+            if (colonIndex !== -1) {
+                line = line.substring(colonIndex + 1).trim();
             }
+
+            if (line === '') continue;
+            if (line.startsWith('.')) continue;
 
             try {
                 const instr = this.parseInstruction(line, pc);
@@ -166,6 +178,7 @@ class PioAssembler {
             case 'mov': instr = this.parseMov(args); break;
             case 'irq': instr = this.parseIrq(args); break;
             case 'set': instr = this.parseSet(args); break;
+            case 'nop': instr = this.parseMov(['y', 'y']); break;
             default: throw new Error(`Unknown instruction: ${op}`);
         }
         
