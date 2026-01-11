@@ -22,8 +22,11 @@ const statusIndicator = document.getElementById('status-indicator');
 
 const txInput = document.getElementById('tx-input');
 const btnPushTx = document.getElementById('btn-push-tx');
+const txPushResult = document.getElementById('tx-push-result');
 const txFifoList = document.getElementById('tx-fifo-list');
 const rxFifoList = document.getElementById('rx-fifo-list');
+const btnPopRx = document.getElementById('btn-pop-rx');
+const rxPopResult = document.getElementById('rx-pop-result');
 
 const cfgOutBase = document.getElementById('cfg-out-base');
 const cfgSetBase = document.getElementById('cfg-set-base');
@@ -51,6 +54,8 @@ const selectedTimingPins = new Set();
 const programDisplay = document.getElementById('program-display');
 
 let runInterval = null;
+let lastRxMessage = 'Not read yet';
+let lastTxMessage = 'Not pushed yet';
 
 // Initialize GPIO Indicators (32 bits, 31 down to 0)
 for (let i = 31; i >= 0; i--) {
@@ -266,11 +271,17 @@ btnPushTx.addEventListener('click', () => {
     const val = parseInt(txInput.value);
     if (!isNaN(val)) {
         if (emulator.pushTx(val)) {
+            const hex = '0x' + (val >>> 0).toString(16).toUpperCase().padStart(8, '0');
+            lastTxMessage = `Pushed: ${hex}`;
             updateUI();
             txInput.value = '';
         } else {
-            alert('TX FIFO Full');
+            lastTxMessage = 'TX FIFO is full';
+            updateUI();
         }
+    } else {
+        lastTxMessage = 'Enter a valid number';
+        updateUI();
     }
 });
 
@@ -278,6 +289,19 @@ txInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
         btnPushTx.click();
     }
+});
+
+btnPopRx.addEventListener('click', () => {
+    const val = emulator.pullRx();
+    if (val === null) {
+        lastRxMessage = 'RX FIFO is empty';
+        updateUI();
+        return;
+    }
+
+    const hex = '0x' + (val >>> 0).toString(16).toUpperCase().padStart(8, '0');
+    lastRxMessage = `Popped: ${hex}`;
+    updateUI();
 });
 
 function assembleAndReset() {
@@ -418,6 +442,8 @@ function updateUI(isStep = false) {
     // FIFOs
     txFifoList.innerHTML = emulator.txFifo.map(v => `<li>0x${v.toString(16).toUpperCase()}</li>`).join('');
     rxFifoList.innerHTML = emulator.rxFifo.map(v => `<li>0x${v.toString(16).toUpperCase()}</li>`).join('');
+    txPushResult.textContent = lastTxMessage;
+    rxPopResult.textContent = lastRxMessage;
 
     // GPIO Output (32-bit)
     // Show effective pin state (Output or Input)

@@ -46,7 +46,8 @@
     <div class="container">
         <header>
             <h1>RP2040/RP2350 PIO Simulator</h1>
-            <div class="dev-note" style="font-size: 0.9em; color: #777; margin-top: 4px;">このツールは現在開発中です。予告なく仕様が変更されます。</div>
+            <div class="dev-note" style="font-size: 0.9em; color: #777; margin-top: 4px;">このツールは現在開発中です。予告なく仕様が変更されます。
+            </div>
         </header>
 
         <div class="main-content">
@@ -91,7 +92,8 @@
                     </div>
                     <div class="config-item">
                         <label>SET Count:</label>
-                        <input type="number" id="cfg-set-count" value="5" min="1" max="5" title="Number of pins driven by SET (1-5)">
+                        <input type="number" id="cfg-set-count" value="5" min="1" max="5"
+                            title="Number of pins driven by SET (1-5)">
                     </div>
                     <div class="config-item">
                         <label>SIDESET Base:</label>
@@ -108,7 +110,8 @@
                 </div>
                 <h3>Timing Chart Pins</h3>
                 <div class="control-panel">
-                    <div style="font-size: 0.8em; color: #666; margin-bottom: 5px;">Select pins to display in timing chart.</div>
+                    <div style="font-size: 0.8em; color: #666; margin-bottom: 5px;">Select pins to display in timing
+                        chart.</div>
                     <div class="gpio-indicators" id="timing-pin-selector"></div>
                 </div>
                 <h3>Shift & FIFO Control</h3>
@@ -157,12 +160,20 @@
                 <div class="fifos">
                     <div class="fifo-box">
                         <h4>TX FIFO</h4>
-                        <input type="text" id="tx-input" placeholder="Hex value (e.g. 0xFF)">
-                        <button id="btn-push-tx">Push</button>
+                        <div class="fifo-controls" style="margin-bottom: 6px; display: flex; gap: 8px; align-items: center;">
+                            <input type="text" id="tx-input" placeholder="Hex value (e.g. 0xFF)">
+                            <button id="btn-push-tx">Push</button>
+                            <span id="tx-push-result" style="font-size: 0.9em; color: #555;"></span>
+                        </div>
                         <ul id="tx-fifo-list"></ul>
                     </div>
                     <div class="fifo-box">
                         <h4>RX FIFO</h4>
+                        <div class="rx-controls"
+                            style="margin-bottom: 6px; display: flex; gap: 8px; align-items: center;">
+                            <button id="btn-pop-rx">Pop</button>
+                            <span id="rx-pop-result" style="font-size: 0.9em; color: #555;"></span>
+                        </div>
                         <ul id="rx-fifo-list"></ul>
                     </div>
                 </div>
@@ -173,10 +184,18 @@
                     <div style="font-size: 0.8em; color: #666; margin-bottom: 5px;">
                         Click: Toggle Input Value.<br>Right-Click/Shift+Click: Toggle Direction (In/Out).
                         <br>
-                        <span style="border: 1px solid #4caf50; background: #4caf50; width: 10px; height: 10px; display: inline-block;"></span> Output High
-                        <span style="border: 1px solid #ccc; background: #eee; width: 10px; height: 10px; display: inline-block;"></span> Output Low
-                        <span style="border: 1px dashed #2196f3; background: #e3f2fd; width: 10px; height: 10px; display: inline-block;"></span> Input Low
-                        <span style="border: 1px dashed #2196f3; background: #2196f3; width: 10px; height: 10px; display: inline-block;"></span> Input High
+                        <span
+                            style="border: 1px solid #4caf50; background: #4caf50; width: 10px; height: 10px; display: inline-block;"></span>
+                        Output High
+                        <span
+                            style="border: 1px solid #ccc; background: #eee; width: 10px; height: 10px; display: inline-block;"></span>
+                        Output Low
+                        <span
+                            style="border: 1px dashed #2196f3; background: #e3f2fd; width: 10px; height: 10px; display: inline-block;"></span>
+                        Input Low
+                        <span
+                            style="border: 1px dashed #2196f3; background: #2196f3; width: 10px; height: 10px; display: inline-block;"></span>
+                        Input High
                     </div>
                     <div class="gpio-indicators" id="gpio-indicators"> </div>
                 </div>
