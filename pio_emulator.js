@@ -12,7 +12,7 @@ class PioEmulator {
         this.y = 0;
         this.osr = 0;
         this.isr = 0;
-        this.osrCount = 0; // Number of bits shifted out
+        this.osrCount = 32; // Number of bits shifted out (initially "empty")
         this.isrCount = 0; // Number of bits shifted in
         
         this.txFifo = [];
