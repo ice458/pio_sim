@@ -293,6 +293,30 @@ button:disabled {
     width: 25px;
     text-align: right;
     user-select: none;
+    cursor: pointer;
+}
+
+.program-line .bp-marker {
+    display: inline-block;
+    width: 14px;
+    text-align: center;
+    margin-right: 2px;
+    user-select: none;
+    cursor: pointer;
+    color: transparent;
+}
+
+.program-line .bp-marker::before {
+    content: "●";
+    color: transparent;
+}
+
+.program-line.breakpoint .bp-marker::before {
+    color: #e53935;
+}
+
+.program-line.breakpoint .pc {
+    color: #e53935;
 }
 
 #timing-pin-selector .gpio-bit {

@@ -38,6 +38,8 @@ class PioEmulator {
         this.autoPull = false;
         this.pushThresh = 32;
         this.pullThresh = 32;
+        this.statusSel = 0; // 0 = TX FIFO level, 1 = RX FIFO level
+        this.statusN = 0;   // Comparison value for MOV STATUS
         
         // Do not clear instructions here, as reset() is called after loadProgram
         // this.instructions = [];
@@ -46,6 +48,8 @@ class PioEmulator {
         
         this.history = []; // For timing chart: { clock, pins }
         this.irq = 0; // 8-bit IRQ flags
+        this.irqWaitStalled = false; // Sticky flag while an IRQ wait is stalling
+        this.irqWaitPc = -1;         // PC of the IRQ instruction that is waiting
         this.status = 'stopped'; // running, stopped, stalled
         this.error = null;
     }
@@ -93,6 +97,15 @@ class PioEmulator {
             return this.rxFifo.shift();
         }
         return null;
+    }
+
+    // Threshold 0 is interpreted as 32 per RP2040/RP2350 PIO datasheet.
+    effPushThresh() {
+        return this.pushThresh === 0 ? 32 : this.pushThresh;
+    }
+
+    effPullThresh() {
+        return this.pullThresh === 0 ? 32 : this.pullThresh;
     }
 
     step() {
@@ -171,17 +184,19 @@ class PioEmulator {
 
         let nextPc = this.pc + 1;
         let executed = true;
-
-        // Set delay if present
-        if (instr.delay > 0) {
-            this.delay = instr.delay;
-        }
+        let jumped = false;         // PC explicitly changed by JMP
+        this.pcOverride = null;     // PC explicitly written by MOV/OUT dest=PC
 
         try {
             switch (instr.type) {
-                case 'JMP':
-                    nextPc = this.executeJmp(instr, nextPc);
+                case 'JMP': {
+                    const jmpTarget = this.executeJmp(instr, nextPc);
+                    if (jmpTarget !== nextPc) {
+                        jumped = true;
+                    }
+                    nextPc = jmpTarget;
                     break;
+                }
                 case 'WAIT':
                     executed = this.executeWait(instr);
                     if (!executed) nextPc = this.pc; // Stay on same instruction
@@ -206,7 +221,8 @@ class PioEmulator {
                     this.executeMov(instr);
                     break;
                 case 'IRQ':
-                    this.executeIrq(instr);
+                    executed = this.executeIrq(instr);
+                    if (!executed) nextPc = this.pc; // Stall (irq wait)
                     break;
                 case 'SET':
                     this.executeSet(instr);
@@ -220,11 +236,25 @@ class PioEmulator {
 
         if (executed) {
             this.status = 'running';
-            // Handle wrap
-            if (nextPc > this.wrap) {
-                nextPc = this.wrapTarget;
+
+            // Delay only applies after a successful (non-stalled) execution.
+            if (instr.delay > 0) {
+                this.delay = instr.delay;
             }
-            this.pc = nextPc;
+
+            if (this.pcOverride !== null) {
+                // MOV/OUT dest=PC: take override, skip wrap (non-sequential update).
+                this.pc = this.pcOverride >>> 0;
+            } else if (jumped) {
+                // JMP: wrap does not apply to JMP targets per datasheet.
+                this.pc = nextPc;
+            } else {
+                // Sequential increment: apply wrap if PC stepped past wrap.
+                if (nextPc > this.wrap) {
+                    nextPc = this.wrapTarget;
+                }
+                this.pc = nextPc;
+            }
         } else {
             this.status = 'stalled';
         }
@@ -252,7 +282,7 @@ class PioEmulator {
                 break;
             case 'x!=y': conditionMet = (this.x !== this.y); break;
             case 'pin': conditionMet = (this.getPinState(this.jmpPin) === 1); break;
-            case '!osre': conditionMet = (this.osrCount < this.pullThresh); break; // OSR not empty (count < threshold)
+            case '!osre': conditionMet = (this.osrCount < this.effPullThresh()); break; // OSR not empty (count < threshold)
         }
 
         if (conditionMet) {
@@ -355,7 +385,7 @@ class PioEmulator {
         if (newIsrCount > 32) newIsrCount = 32;
         
         // Auto-push logic
-        if (this.autoPush && newIsrCount >= this.pushThresh) {
+        if (this.autoPush && newIsrCount >= this.effPushThresh()) {
             if (this.rxFifo.length < 4) {
                 this.rxFifo.push(newIsr);
                 this.isr = 0;
@@ -375,7 +405,7 @@ class PioEmulator {
         // out dest, bit_count
         
         // Auto-pull logic
-        if (this.autoPull && this.osrCount >= this.pullThresh) {
+        if (this.autoPull && this.osrCount >= this.effPullThresh()) {
             if (this.txFifo.length > 0) {
                 this.osr = this.txFifo.shift();
                 this.osrCount = 0;
@@ -439,8 +469,8 @@ class PioEmulator {
                 }
                 this.pindirs = this.pindirs >>> 0; // Rule 3: Integer Safety
                 break;
-            case 'pc': 
-                this.pc = data - 1; 
+            case 'pc':
+                this.pcOverride = data;
                 return true;
             case 'isr':
                 // OUT to ISR: Shift into ISR respecting inShiftDir
@@ -471,11 +501,17 @@ class PioEmulator {
 
     executePush(instr) {
         // push (iffull) (block/noblock)
-        
-        if (instr.ifull && this.isrCount < this.pushThresh) {
+
+        // With autopush enabled, explicit PUSH is a no-op when the ISR is not
+        // yet full (autopush would have pushed already otherwise).
+        if (this.autoPush && this.isrCount < this.effPushThresh()) {
+            return true;
+        }
+
+        if (instr.ifull && this.isrCount < this.effPushThresh()) {
             return true; // NOP
         }
-        
+
         if (this.rxFifo.length >= 4) {
             if (instr.block) {
                 return false; // Stall
@@ -495,9 +531,14 @@ class PioEmulator {
 
     executePull(instr) {
         // pull (ifempty) (block/noblock)
-        
-        if (instr.ifempty && this.osrCount < this.pullThresh) {
 
+        // With autopull enabled, explicit PULL is a no-op while the OSR still
+        // has data (osrCount < threshold). Autopull refills otherwise.
+        if (this.autoPull && this.osrCount < this.effPullThresh()) {
+            return true;
+        }
+
+        if (instr.ifempty && this.osrCount < this.effPullThresh()) {
             return true; // NOP
         }
 
@@ -525,14 +566,15 @@ class PioEmulator {
             case 'x': val = this.x; break;
             case 'y': val = this.y; break;
             case 'null': val = 0; break;
-            case 'status': 
-                // Rule 4: MOV STATUS
-                if (this.txFifo.length < 4) {
-                    val = 0xFFFFFFFF;
-                } else {
-                    val = 0;
-                }
+            case 'status': {
+                // MOV STATUS: all-ones if selected FIFO level < STATUS_N, else all-zeros.
+                // statusSel: 0 = TX FIFO level, 1 = RX FIFO level.
+                const level = this.statusSel === 1
+                    ? this.rxFifo.length
+                    : this.txFifo.length;
+                val = level < this.statusN ? 0xFFFFFFFF : 0;
                 break;
+            }
             case 'isr': val = this.isr; break;
             case 'osr': val = this.osr; break;
         }
@@ -552,7 +594,7 @@ class PioEmulator {
             case 'x': this.x = val; break;
             case 'y': this.y = val; break;
             case 'exec': break; // TODO
-            case 'pc': this.pc = val - 1; break;
+            case 'pc': this.pcOverride = val; break;
             case 'isr': this.isr = val; this.isrCount = 0; break; // Reset count to 0
             case 'osr': this.osr = val; this.osrCount = 0; break; // Reset count to 0
         }
@@ -566,21 +608,35 @@ class PioEmulator {
         return ((n >>> 16) | (n << 16)) >>> 0;
     }
 
-    executeIrq(instr) {        
+    executeIrq(instr) {
         const index = instr.index & 7; // 0-7
-        
+
         if (instr.clear) {
             this.irq &= ~(1 << index);
-        } else {
-            // Set
+            this.irqWaitStalled = false;
+            this.irqWaitPc = -1;
+            return true;
+        }
+
+        // Reset sticky stall flag when we've moved to a different IRQ instr.
+        const continuingSameWait = this.irqWaitStalled && this.irqWaitPc === this.pc;
+
+        // Set the flag only on the first cycle of this instruction; during a
+        // wait stall the SM re-executes the IRQ op but must not re-assert the
+        // flag, otherwise an external clear cannot unstick the wait.
+        if (!continuingSameWait) {
             this.irq |= (1 << index);
-            
-            if (instr.wait) {
-                if ((this.irq >> index) & 1) {
-                    return false; // Stall
-                }
+        }
+
+        if (instr.wait) {
+            if ((this.irq >> index) & 1) {
+                this.irqWaitStalled = true;
+                this.irqWaitPc = this.pc;
+                return false; // Stall until flag is cleared externally
             }
         }
+        this.irqWaitStalled = false;
+        this.irqWaitPc = -1;
         return true;
     }
 

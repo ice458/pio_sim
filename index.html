@@ -48,6 +48,14 @@
             <h1>RP2040/RP2350 PIO Simulator</h1>
             <div class="dev-note" style="font-size: 0.9em; color: #777; margin-top: 4px;">このツールは現在開発中です。予告なく仕様が変更されます。
             </div>
+            <details style="font-size: 0.85em; color: #777; margin-top: 4px;">
+                <summary style="cursor: pointer;">未対応の機能</summary>
+                <ul style="margin: 4px 0 0 1.2em; padding: 0;">
+                    <li><code>out exec</code> / <code>mov exec</code>（命令の一時注入）</li>
+                    <li>IRQ の <code>rel</code> 修飾子（マルチ SM 相対アドレッシング）</li>
+                    <li>サイドセット bit 幅に応じた delay 最大値のアセンブラ側チェック</li>
+                </ul>
+            </details>
         </header>
 
         <div class="main-content">
@@ -75,6 +83,17 @@
                     <button id="btn-step">Step</button>
                     <button id="btn-run-stop">Run</button>
                     <button id="btn-reset">Reset</button>
+                    <label style="margin-left: auto; font-size: 0.9em; display: flex; align-items: center; gap: 4px;">
+                        Speed:
+                        <select id="run-speed">
+                            <option value="500">2 Hz</option>
+                            <option value="100" selected>10 Hz</option>
+                            <option value="20">50 Hz</option>
+                            <option value="4">250 Hz</option>
+                            <option value="1">1 kHz</option>
+                            <option value="0">Max</option>
+                        </select>
+                    </label>
                 </div>
                 <div id="error-message" class="error"></div>
 
@@ -134,12 +153,25 @@
                     <div class="config-item" style="margin-right: 20px;">
                         <label>Auto Push:</label>
                         <input type="checkbox" id="cfg-auto-push">
-                        <input type="number" id="cfg-push-thresh" value="32" min="1" max="32" style="width: 40px;">
+                        <input type="number" id="cfg-push-thresh" value="32" min="0" max="32" style="width: 40px;"
+                            title="Shift threshold (0 is treated as 32)">
                     </div>
                     <div class="config-item">
                         <label>Auto Pull:</label>
                         <input type="checkbox" id="cfg-auto-pull">
-                        <input type="number" id="cfg-pull-thresh" value="32" min="1" max="32" style="width: 40px;">
+                        <input type="number" id="cfg-pull-thresh" value="32" min="0" max="32" style="width: 40px;"
+                            title="Shift threshold (0 is treated as 32)">
+                    </div>
+                    <div style="width: 100%"></div>
+                    <div class="config-item" style="margin-right: 20px;">
+                        <label>MOV STATUS:</label>
+                        <select id="cfg-status-sel">
+                            <option value="0">TX FIFO level</option>
+                            <option value="1">RX FIFO level</option>
+                        </select>
+                        <label style="margin-left: 6px;">&lt; N =</label>
+                        <input type="number" id="cfg-status-n" value="0" min="0" max="15" style="width: 40px;"
+                            title="All-ones when selected FIFO level is less than N (4-bit field)">
                     </div>
                 </div>
             </div>
@@ -161,7 +193,7 @@
                     <div class="fifo-box">
                         <h4>TX FIFO</h4>
                         <div class="fifo-controls" style="margin-bottom: 6px; display: flex; gap: 8px; align-items: center;">
-                            <input type="text" id="tx-input" placeholder="Hex value (e.g. 0xFF)">
+                            <input type="text" id="tx-input" placeholder="e.g. 0xFF, 255, 0b1010, FF">
                             <button id="btn-push-tx">Push</button>
                             <span id="tx-push-result" style="font-size: 0.9em; color: #555;"></span>
                         </div>

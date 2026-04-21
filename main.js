@@ -1,6 +1,8 @@
 const assembler = new PioAssembler();
 const emulator = new PioEmulator();
 
+const STORAGE_KEY = 'pio_sim_code_v1';
+
 // UI Elements
 const exampleSelect = document.getElementById('example-select');
 const codeEditor = document.getElementById('code-editor');
@@ -40,6 +42,8 @@ const cfgAutoPush = document.getElementById('cfg-auto-push');
 const cfgPushThresh = document.getElementById('cfg-push-thresh');
 const cfgAutoPull = document.getElementById('cfg-auto-pull');
 const cfgPullThresh = document.getElementById('cfg-pull-thresh');
+const cfgStatusSel = document.getElementById('cfg-status-sel');
+const cfgStatusN = document.getElementById('cfg-status-n');
 
 const gpioHexVal = document.getElementById('gpio-hex-val');
 const gpioIndicators = document.getElementById('gpio-indicators');
@@ -54,6 +58,8 @@ const selectedTimingPins = new Set();
 const programDisplay = document.getElementById('program-display');
 
 let runInterval = null;
+let runMode = null; // 'interval' | 'raf'
+const breakpoints = new Set();
 let lastRxMessage = 'Not read yet';
 let lastTxMessage = 'Not pushed yet';
 
@@ -131,6 +137,13 @@ btnAssemble.addEventListener('click', assembleAndReset);
 btnStep.addEventListener('click', step);
 btnRunStop.addEventListener('click', toggleRunStop);
 btnReset.addEventListener('click', reset);
+
+document.getElementById('run-speed').addEventListener('change', () => {
+    if (runInterval) {
+        stop();
+        run();
+    }
+});
 
 const examples = {
     blink: {
@@ -232,6 +245,8 @@ exampleSelect.addEventListener('change', () => {
         cfgPushThresh.value = ex.config.pushThresh;
         cfgAutoPull.checked = ex.config.autoPull;
         cfgPullThresh.value = ex.config.pullThresh;
+        cfgStatusSel.value = ex.config.statusSel !== undefined ? ex.config.statusSel : 0;
+        cfgStatusN.value = ex.config.statusN !== undefined ? ex.config.statusN : 0;
 
         // Update emulator config
         updateConfig();
@@ -252,6 +267,8 @@ function updateConfig() {
     emulator.pushThresh = parseInt(cfgPushThresh.value);
     emulator.autoPull = cfgAutoPull.checked;
     emulator.pullThresh = parseInt(cfgPullThresh.value);
+    emulator.statusSel = parseInt(cfgStatusSel.value);
+    emulator.statusN = parseInt(cfgStatusN.value);
 }
 
 cfgOutBase.addEventListener('change', updateConfig);
@@ -266,9 +283,21 @@ cfgAutoPush.addEventListener('change', updateConfig);
 cfgPushThresh.addEventListener('change', updateConfig);
 cfgAutoPull.addEventListener('change', updateConfig);
 cfgPullThresh.addEventListener('change', updateConfig);
+cfgStatusSel.addEventListener('change', updateConfig);
+cfgStatusN.addEventListener('change', updateConfig);
+
+function parseUserNumber(input) {
+    const raw = input.trim().toLowerCase();
+    if (raw === '') return NaN;
+    if (raw.startsWith('0x')) return parseInt(raw.substring(2), 16);
+    if (raw.startsWith('0b')) return parseInt(raw.substring(2), 2);
+    if (/^[0-9]+$/.test(raw)) return parseInt(raw, 10);
+    if (/^[0-9a-f]+$/.test(raw)) return parseInt(raw, 16);
+    return NaN;
+}
 
 btnPushTx.addEventListener('click', () => {
-    const val = parseInt(txInput.value);
+    const val = parseUserNumber(txInput.value);
     if (!isNaN(val)) {
         if (emulator.pushTx(val)) {
             const hex = '0x' + (val >>> 0).toString(16).toUpperCase().padStart(8, '0');
@@ -319,18 +348,35 @@ function assembleAndReset() {
             const div = document.createElement('div');
             div.className = 'program-line';
             div.id = `prog-line-${item.pc}`;
+            div.title = 'Click line number to toggle breakpoint';
+
+            const bpSpan = document.createElement('span');
+            bpSpan.className = 'bp-marker';
+            bpSpan.textContent = ' ';
+            bpSpan.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleBreakpoint(item.pc);
+            });
 
             const pcSpan = document.createElement('span');
             pcSpan.className = 'pc';
             pcSpan.textContent = item.pc.toString().padStart(2, '0');
+            pcSpan.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleBreakpoint(item.pc);
+            });
 
             const codeSpan = document.createElement('span');
             codeSpan.textContent = item.text;
 
+            div.appendChild(bpSpan);
             div.appendChild(pcSpan);
             div.appendChild(codeSpan);
             programDisplay.appendChild(div);
         });
+
+        // Clear stale breakpoints when re-assembling; instruction mapping may differ.
+        breakpoints.clear();
 
         updateConfig();
 
@@ -344,9 +390,14 @@ function assembleAndReset() {
     }
 }
 
-function step() {
-    emulator.step();
-    updateUI();
+function toggleBreakpoint(pc) {
+    if (breakpoints.has(pc)) {
+        breakpoints.delete(pc);
+    } else {
+        breakpoints.add(pc);
+    }
+    const line = document.getElementById(`prog-line-${pc}`);
+    if (line) line.classList.toggle('breakpoint', breakpoints.has(pc));
 }
 
 function toggleRunStop() {
@@ -360,25 +411,62 @@ function toggleRunStop() {
 function run() {
     if (runInterval) return;
     btnRunStop.textContent = 'Stop';
-    runInterval = setInterval(() => {
-        emulator.step();
-        updateUI();
-        if (emulator.status === 'error') {
-            stop();
-            errorMessage.textContent = emulator.error;
-        }
-    }, 100); // 10Hz for visibility
+
+    const speedSel = document.getElementById('run-speed');
+    const period = speedSel ? parseInt(speedSel.value) : 100;
+
+    if (period === 0) {
+        // "Max" mode: run many steps per frame via rAF for smooth UI updates.
+        const STEPS_PER_FRAME = 200;
+        runMode = 'raf';
+        const loop = () => {
+            if (runMode !== 'raf') return;
+            for (let i = 0; i < STEPS_PER_FRAME; i++) {
+                emulator.step();
+                if (emulator.status === 'error') break;
+                if (breakpoints.has(emulator.pc)) {
+                    updateUI();
+                    stop();
+                    return;
+                }
+            }
+            updateUI();
+            if (emulator.status === 'error') {
+                stop();
+                errorMessage.textContent = emulator.error;
+                return;
+            }
+            runInterval = requestAnimationFrame(loop);
+        };
+        runInterval = requestAnimationFrame(loop);
+    } else {
+        runMode = 'interval';
+        runInterval = setInterval(() => {
+            emulator.step();
+            justResumed = false;
+            updateUI();
+            if (emulator.status === 'error') {
+                stop();
+                errorMessage.textContent = emulator.error;
+                return;
+            }
+            if (breakpoints.has(emulator.pc)) {
+                stop();
+            }
+        }, period);
+    }
 }
 
 function stop() {
     if (runInterval) {
-        clearInterval(runInterval);
-        runInterval = null;
-        btnRunStop.textContent = 'Run';
-        // Update status to STOPPED if not error
-        if (emulator.status !== 'error') {
-
+        if (runMode === 'raf') {
+            cancelAnimationFrame(runInterval);
+        } else {
+            clearInterval(runInterval);
         }
+        runInterval = null;
+        runMode = null;
+        btnRunStop.textContent = 'Run';
         updateUI();
     }
 }
@@ -487,6 +575,15 @@ function updateUI(isStep = false) {
     const currentLine = document.getElementById(`prog-line-${emulator.pc}`);
     if (currentLine) {
         currentLine.classList.add('active');
+        // Auto-scroll only when the active line is out of view.
+        const parent = currentLine.parentElement;
+        if (parent) {
+            const lineTop = currentLine.offsetTop - parent.offsetTop;
+            const lineBottom = lineTop + currentLine.offsetHeight;
+            if (lineTop < parent.scrollTop || lineBottom > parent.scrollTop + parent.clientHeight) {
+                currentLine.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+            }
+        }
     }
 
     // Timing Chart
@@ -593,6 +690,34 @@ function drawTimingChart() {
         ctx.stroke();
     }
 }
+
+// Restore code from localStorage (if any) before initial assemble.
+try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved !== null && saved !== '') {
+        codeEditor.value = saved;
+    }
+} catch (e) {
+    // localStorage unavailable (private mode / quota) — silently skip.
+}
+
+// Save on every edit.
+codeEditor.addEventListener('input', () => {
+    try {
+        localStorage.setItem(STORAGE_KEY, codeEditor.value);
+    } catch (e) {
+        // Ignore quota errors.
+    }
+});
+
+// Loading an example should overwrite persisted code too.
+exampleSelect.addEventListener('change', () => {
+    try {
+        localStorage.setItem(STORAGE_KEY, codeEditor.value);
+    } catch (e) {
+        // Ignore.
+    }
+});
 
 // Initial assemble
 assembleAndReset();
