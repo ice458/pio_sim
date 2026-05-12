@@ -58,8 +58,69 @@
 
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RP2040/RP2350 PIO Simulator</title>
+    <title>RP2040/RP2350 PIO Simulator | PIOシミュレータ - ice458の物置き</title>
+    <meta name="description" content="Raspberry Pi Pico (RP2040) / Pico 2 (RP2350) の PIO アセンブリコードをブラウザ上で実行できるシミュレータです。ステップ実行、レジスタ・FIFO・GPIO・タイミングチャートの可視化に対応し、インストール不要で動作します。">
+    <meta name="keywords" content="RP2040,RP2350,PIO,シミュレータ,simulator,アセンブラ,assembler,Raspberry Pi Pico,Pico 2,ピオ,ステートマシン,ice458">
+    <meta name="author" content="ice458">
+
+    <!-- Canonical URL -->
+    <link rel="canonical" href="https://ice458.github.io/tools/pio_sim/">
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://ice458.github.io/tools/pio_sim/">
+    <meta property="og:title" content="RP2040/RP2350 PIO Simulator | PIOシミュレータ">
+    <meta property="og:description" content="Raspberry Pi Pico (RP2040) / Pico 2 (RP2350) の PIO アセンブリコードをブラウザ上で実行できるシミュレータです。ステップ実行、レジスタ・FIFO・GPIO・タイミングチャートの可視化に対応します。">
+    <meta property="og:image" content="https://ice458.github.io/tools/pio_sim/PIO.png">
+
+    <!-- Twitter -->
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="https://ice458.github.io/tools/pio_sim/">
+    <meta property="twitter:title" content="RP2040/RP2350 PIO Simulator | PIOシミュレータ">
+    <meta property="twitter:description" content="Raspberry Pi Pico (RP2040) / Pico 2 (RP2350) の PIO アセンブリコードをブラウザ上で実行できるシミュレータです。">
+    <meta property="twitter:image" content="https://ice458.github.io/tools/pio_sim/PIO.png">
+
     <link rel="stylesheet" href="style.css">
+
+    <!-- ファビコン設定 -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon-180x180.png">
+    <link rel="manifest" href="/site.webmanifest">
+
+    <!-- ブラウザ固有のメタタグ -->
+    <meta name="theme-color" content="#aaaeae">
+    <meta name="msapplication-TileColor" content="#aaaeae">
+    <meta name="msapplication-TileImage" content="/favicon-180x180.png">
+
+    <!-- 構造化データ (JSON-LD) -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "RP2040/RP2350 PIO Simulator",
+      "alternateName": "PIOシミュレータ",
+      "description": "Raspberry Pi Pico (RP2040) / Pico 2 (RP2350) の PIO アセンブリコードをブラウザ上で実行・可視化できるシミュレータ。",
+      "url": "https://ice458.github.io/tools/pio_sim/",
+      "image": "https://ice458.github.io/tools/pio_sim/PIO.png",
+      "applicationCategory": "DeveloperApplication",
+      "operatingSystem": "Web Browser",
+      "browserRequirements": "Requires JavaScript",
+      "inLanguage": "ja",
+      "isAccessibleForFree": true,
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "JPY"
+      },
+      "author": {
+        "@type": "Person",
+        "name": "ice458",
+        "url": "https://ice458.github.io/"
+      }
+    }
+    </script>
 </head>
 
 <body>
@@ -271,6 +332,22 @@
                 </div>
             </div>
         </div>
+
+        <section class="about-section" style="margin-top: 32px; padding: 20px; border-top: 1px solid #ddd; line-height: 1.7;">
+            <h2>このツールについて</h2>
+            <p>
+                本ツールは、Raspberry Pi Pico に搭載されている <strong>RP2040</strong> および Pico 2 に搭載されている <strong>RP2350</strong> のプログラマブル I/O (<strong>PIO</strong>) 用アセンブリコードを、Web ブラウザ上で実行・検証できるシミュレータです。インストール不要で、開いたページ内ですぐにステートマシンの挙動を確認できます。
+            </p>
+            <p>
+                PIO は CPU から独立して動作する小さなステートマシンで、I2S・WS2812・任意のシリアルプロトコルなど、タイミングがシビアな I/O 処理を CPU を介さずに実装できる強力な周辺機能です。一方で、専用の小さな命令セット・サイドセット・遅延・FIFO・スクラッチレジスタといった概念が独特で、実機書き込み前に挙動を理解するのは難しい部分があります。本シミュレータは、コードを 1 命令ずつステップ実行しながら内部状態を観察できるようにすることで、この理解を助けることを目的としています。
+            </p>
+            <p>
+                シミュレータは Pico SDK の <code>pioasm</code> と互換性のある記法でアセンブリを受け付け、<code>jmp</code> / <code>wait</code> / <code>in</code> / <code>out</code> / <code>push</code> / <code>pull</code> / <code>mov</code> / <code>irq</code> / <code>set</code> といった全命令と、サイドセット、<code>.wrap</code> / <code>.wrap_target</code>、遅延サイクル、IN/OUT/SET ピンマッピングなどに対応しています。実行中はステートマシンのレジスタ (X / Y / OSR / ISR / PC) ・TX/RX FIFO ・GPIO 0–31 の入出力状態・タイミングチャート・IRQ フラグをリアルタイムに可視化します。
+            </p>
+            <p>
+                ブラウザ上で完結する純粋なクライアントサイド実装で、入力したコードや状態は外部に送信されません。RP2040/RP2350 の PIO プログラム開発、Pico SDK での学習、教材や勉強会での挙動説明などに自由にご利用ください。
+            </p>
+        </section>
 
         <footer
             style="margin-top: 20px; padding-top: 10px; border-top: 1px solid #ccc; text-align: center; font-size: 0.9em;">
