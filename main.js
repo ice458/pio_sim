@@ -3,7 +3,6 @@ const emulator = new PioEmulator();
 
 const STORAGE_KEY = 'pio_sim_code_v1';
 
-// UI Elements
 const exampleSelect = document.getElementById('example-select');
 const codeEditor = document.getElementById('code-editor');
 const btnAssemble = document.getElementById('btn-assemble');
@@ -63,7 +62,6 @@ const breakpoints = new Set();
 let lastRxMessage = 'Not read yet';
 let lastTxMessage = 'Not pushed yet';
 
-// Initialize GPIO Indicators (32 bits, 31 down to 0)
 for (let i = 31; i >= 0; i--) {
     const bit = document.createElement('div');
     bit.className = 'gpio-bit';
@@ -71,23 +69,17 @@ for (let i = 31; i >= 0; i--) {
     bit.textContent = i;
     bit.title = `GPIO ${i}`;
 
-    // Add click listener to toggle input
     bit.addEventListener('click', (e) => {
         if (e.shiftKey) {
-            // Shift+Click: Toggle Direction (Debug feature)
             emulator.pindirs ^= (1 << i);
         } else {
-            // Click: Toggle Input Value
             emulator.inputs ^= (1 << i);
         }
         updateUI();
     });
 
-    // Prevent context menu on bits to allow right click if we wanted, 
-    // but for now Shift+Click is enough.
     bit.addEventListener('contextmenu', (e) => {
         e.preventDefault();
-        // Right click could also toggle direction
         emulator.pindirs ^= (1 << i);
         updateUI();
     });
@@ -95,14 +87,12 @@ for (let i = 31; i >= 0; i--) {
     gpioIndicators.appendChild(bit);
 }
 
-// Initialize IRQ Flags
 for (let i = 0; i < 8; i++) {
     const flag = document.createElement('div');
     flag.className = 'irq-flag';
     flag.id = `irq-flag-${i}`;
     flag.textContent = `IRQ ${i}`;
 
-    // Click to toggle IRQ
     flag.addEventListener('click', () => {
         emulator.irq ^= (1 << i);
         updateUI();
@@ -111,7 +101,6 @@ for (let i = 0; i < 8; i++) {
     irqFlags.appendChild(flag);
 }
 
-// Initialize Timing Chart Pin Selector (32 bits, 31 down to 0)
 for (let i = 31; i >= 0; i--) {
     const bit = document.createElement('div');
     bit.className = 'gpio-bit';
@@ -132,7 +121,6 @@ for (let i = 31; i >= 0; i--) {
     timingPinSelector.appendChild(bit);
 }
 
-// Event Listeners
 btnAssemble.addEventListener('click', assembleAndReset);
 btnStep.addEventListener('click', step);
 btnRunStop.addEventListener('click', toggleRunStop);
@@ -228,7 +216,6 @@ exampleSelect.addEventListener('change', () => {
         const ex = examples[key];
         codeEditor.value = ex.code;
 
-        // Apply config
         cfgOutBase.value = ex.config.outBase;
         cfgSetBase.value = ex.config.setBase;
         if (ex.config.setCount !== undefined) {
@@ -248,12 +235,10 @@ exampleSelect.addEventListener('change', () => {
         cfgStatusSel.value = ex.config.statusSel !== undefined ? ex.config.statusSel : 0;
         cfgStatusN.value = ex.config.statusN !== undefined ? ex.config.statusN : 0;
 
-        // Update emulator config
         updateConfig();
     }
 });
 
-// Config Listeners
 function updateConfig() {
     emulator.outBase = parseInt(cfgOutBase.value);
     emulator.setBase = parseInt(cfgSetBase.value);
@@ -340,7 +325,6 @@ function assembleAndReset() {
         emulator.loadProgram(program);
         emulator.programMap = program.programMap;
 
-        // Populate Program Display
         programDisplay.innerHTML = '';
         programDisplay.style.display = 'block';
 
@@ -443,7 +427,6 @@ function run() {
         runMode = 'interval';
         runInterval = setInterval(() => {
             emulator.step();
-            justResumed = false;
             updateUI();
             if (emulator.status === 'error') {
                 stop();
@@ -472,30 +455,22 @@ function stop() {
 }
 
 function step() {
-    stop(); // Ensure not running
+    stop();
     emulator.step();
-    // Force status update for step
-    // If step was successful, status is 'running' (internally), but we are paused.
-    // Maybe we should show 'STEP' or 'PAUSED'?
-    updateUI(true); // Pass flag for step
+    updateUI(true);
 }
 
 function reset() {
     stop();
     emulator.reset();
-    updateConfig(); // Restore config
+    updateConfig();
     updateUI();
 }
 
 function updateUI(isStep = false) {
-    // Status
     let displayStatus = emulator.status.toUpperCase();
-    if (runInterval) {
-        // Running
-    } else {
-        if (emulator.status === 'running') {
-            displayStatus = isStep ? 'STEP' : 'STOPPED';
-        }
+    if (!runInterval && emulator.status === 'running') {
+        displayStatus = isStep ? 'STEP' : 'STOPPED';
     }
 
     statusIndicator.textContent = displayStatus;
@@ -517,7 +492,6 @@ function updateUI(isStep = false) {
         statusIndicator.style.color = 'white';
     }
 
-    // Registers
     regPc.textContent = emulator.pc;
     regClock.textContent = emulator.clock;
     regX.textContent = '0x' + emulator.x.toString(16).toUpperCase().padStart(8, '0');
@@ -527,14 +501,11 @@ function updateUI(isStep = false) {
     regIsr.textContent = '0x' + emulator.isr.toString(16).toUpperCase().padStart(8, '0');
     regIsrCount.textContent = emulator.isrCount;
 
-    // FIFOs
     txFifoList.innerHTML = emulator.txFifo.map(v => `<li>0x${v.toString(16).toUpperCase()}</li>`).join('');
     rxFifoList.innerHTML = emulator.rxFifo.map(v => `<li>0x${v.toString(16).toUpperCase()}</li>`).join('');
     txPushResult.textContent = lastTxMessage;
     rxPopResult.textContent = lastRxMessage;
 
-    // GPIO Output (32-bit)
-    // Show effective pin state (Output or Input)
     const allPins = emulator.getAllPinStates();
     gpioHexVal.textContent = '0x' + (allPins >>> 0).toString(16).toUpperCase().padStart(8, '0');
 
@@ -543,22 +514,13 @@ function updateUI(isStep = false) {
         const isOut = (emulator.pindirs >> i) & 1;
         const val = (allPins >> i) & 1;
 
-        // Reset classes
         bit.className = 'gpio-bit';
+        if (!isOut) bit.classList.add('input');
+        if (val) bit.classList.add('on');
 
-        if (!isOut) {
-            bit.classList.add('input');
-        }
-
-        if (val) {
-            bit.classList.add('on');
-        }
-
-        // Add title for tooltip
         bit.title = `GPIO ${i}: ${isOut ? 'Output' : 'Input'} = ${val}`;
     }
 
-    // IRQ Flags
     for (let i = 0; i < 8; i++) {
         const flag = document.getElementById(`irq-flag-${i}`);
         if ((emulator.irq >> i) & 1) {
@@ -568,14 +530,12 @@ function updateUI(isStep = false) {
         }
     }
 
-    // Highlight current line
     const activeLines = programDisplay.querySelectorAll('.program-line.active');
     activeLines.forEach(el => el.classList.remove('active'));
 
     const currentLine = document.getElementById(`prog-line-${emulator.pc}`);
     if (currentLine) {
         currentLine.classList.add('active');
-        // Auto-scroll only when the active line is out of view.
         const parent = currentLine.parentElement;
         if (parent) {
             const lineTop = currentLine.offsetTop - parent.offsetTop;
@@ -586,7 +546,6 @@ function updateUI(isStep = false) {
         }
     }
 
-    // Timing Chart
     drawTimingChart();
 }
 
@@ -598,35 +557,22 @@ function drawTimingChart() {
     const history = emulator.history;
     if (history.length === 0) return;
 
-    // Determine pins to show
     let pinsToShow = [];
-    
+
     if (selectedTimingPins.size > 0) {
         pinsToShow = Array.from(selectedTimingPins);
     } else {
-        // Default: Show SideSet pins and OutBase pins
         const ssBase = emulator.sidesetBase;
         const ssCount = emulator.sidesetCount;
-        
-        // Add SideSet pins
-        if (ssCount > 0) {
-            for (let i = 0; i < ssCount; i++) {
-                pinsToShow.push(ssBase + i);
-            }
+        for (let i = 0; i < ssCount; i++) {
+            pinsToShow.push(ssBase + i);
         }
-
-        // Add OutBase pins (heuristic: show 4 pins from OutBase)
-        // Ideally we would know how many pins are used by OUT instructions, but we don't track that easily.
-        // Let's show 4 pins from OutBase as a reasonable default.
         const outBase = emulator.outBase;
         for (let i = 0; i < 4; i++) {
             pinsToShow.push(outBase + i);
         }
-        
-        // If still empty (e.g. no sideset and outBase=0), default 0-3 is covered by above loop
     }
 
-    // Sort pins and remove duplicates
     pinsToShow.sort((a, b) => a - b);
     pinsToShow = [...new Set(pinsToShow)];
 
@@ -640,7 +586,6 @@ function drawTimingChart() {
         }
     }
 
-    // Draw last N cycles
     const maxCycles = 50;
     const startIndex = Math.max(0, history.length - maxCycles);
     const visibleHistory = history.slice(startIndex);
@@ -652,7 +597,6 @@ function drawTimingChart() {
     ctx.strokeStyle = '#ccc';
     ctx.lineWidth = 1;
 
-    // Grid
     for (let i = 0; i < numPins; i++) {
         ctx.beginPath();
         ctx.moveTo(0, i * rowHeight + rowHeight / 2);
@@ -673,7 +617,6 @@ function drawTimingChart() {
         for (let t = 0; t < visibleHistory.length; t++) {
             const state = (visibleHistory[t].pins >> pin) & 1;
             const x = t * stepX;
-            // High is up (y smaller), Low is down (y larger)
             const yCenter = i * rowHeight + rowHeight / 2;
             const y = state ? yCenter - 10 : yCenter + 10;
 
@@ -682,10 +625,10 @@ function drawTimingChart() {
             } else {
                 const prevState = (visibleHistory[t - 1].pins >> pin) & 1;
                 const prevY = prevState ? yCenter - 10 : yCenter + 10;
-                ctx.lineTo(x, prevY); // Horizontal
-                ctx.lineTo(x, y); // Vertical transition
+                ctx.lineTo(x, prevY);
+                ctx.lineTo(x, y);
             }
-            ctx.lineTo(x + stepX, y); // Hold
+            ctx.lineTo(x + stepX, y);
         }
         ctx.stroke();
     }
@@ -719,5 +662,4 @@ exampleSelect.addEventListener('change', () => {
     }
 });
 
-// Initial assemble
 assembleAndReset();

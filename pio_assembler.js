@@ -4,7 +4,7 @@ class PioAssembler {
         this.instructions = [];
         this.programName = "program";
         this.wrapTarget = 0;
-        this.wrap = 0; // Default wrap is at the end
+        this.wrap = 0;
         this.sidesetCount = 0;
         this.sidesetOpt = false;
         this.sidesetPindirs = false;
@@ -25,14 +25,12 @@ class PioAssembler {
         // First pass: collect labels and directives
         for (let i = 0; i < lines.length; i++) {
             let line = lines[i].trim();
-            // Remove comments
             const commentIndex = line.indexOf(';');
             if (commentIndex !== -1) {
                 line = line.substring(0, commentIndex).trim();
             }
             if (line === '') continue;
 
-            // Handle label if present
             const colonIndex = line.indexOf(':');
             if (colonIndex !== -1) {
                 const labelName = line.substring(0, colonIndex).trim();
@@ -64,7 +62,6 @@ class PioAssembler {
             }
             if (line === '') continue;
 
-            // Handle label stripping
             const colonIndex = line.indexOf(':');
             if (colonIndex !== -1) {
                 line = line.substring(colonIndex + 1).trim();
@@ -79,7 +76,7 @@ class PioAssembler {
                 programMap.push({
                     pc: pc,
                     line: i + 1,
-                    text: lines[i] // Keep original text including comments for display
+                    text: lines[i] // original (with comments) for the program display
                 });
                 pc++;
             } catch (e) {
@@ -114,42 +111,36 @@ class PioAssembler {
                 this.wrap = pc - 1;
                 break;
             case '.side_set':
-                // Simplified side_set handling
                 // .side_set count [opt] [pindirs]
                 this.sidesetCount = parseInt(parts[1]);
                 if (parts.includes('opt')) this.sidesetOpt = true;
                 if (parts.includes('pindirs')) this.sidesetPindirs = true;
                 break;
-            // Add more directives as needed (.define, .origin etc.)
+            // TODO: .define, .origin, etc.
         }
     }
 
     parseInstruction(line, pc) {
-        // Handle side-set if present (syntax: side X)
         let sideSetVal = null;
         let delay = 0;
-        
-        // Pre-processing to extract side set and delay
-        // Look for "side" keyword
+
         const sideIndex = line.indexOf('side ');
         let mainPart = line;
-        
+
         if (sideIndex !== -1) {
             const sidePart = line.substring(sideIndex + 5).trim();
             mainPart = line.substring(0, sideIndex).trim();
-            
-            // Parse side value (can be hex, binary, decimal)
-            // sidePart might contain delay too? e.g. "side 1 [2]"
+
+            // sidePart may also carry a delay, e.g. "side 1 [2]"
             const sideParts = sidePart.split(/\s+/);
             let valStr = sideParts[0];
-            
+
             if (valStr.startsWith('0b')) {
                 sideSetVal = parseInt(valStr.substring(2), 2);
             } else {
                 sideSetVal = parseInt(valStr);
             }
-            
-            // Check for delay in side part
+
             if (sideParts.length > 1) {
                 const delayStr = sideParts[1];
                 if (delayStr.startsWith('[') && delayStr.endsWith(']')) {
@@ -157,7 +148,6 @@ class PioAssembler {
                 }
             }
         } else {
-            // Check for delay at the end of line [N]
             const delayMatch = line.match(/\[(\d+)\]$/);
             if (delayMatch) {
                 delay = parseInt(delayMatch[1]);
@@ -165,7 +155,6 @@ class PioAssembler {
             }
         }
 
-        // Regex to split instruction parts
         const parts = mainPart.match(/([^\s,]+)/g);
         if (!parts) throw new Error("Empty instruction");
 
@@ -193,7 +182,7 @@ class PioAssembler {
     }
 
     parseJmp(args, pc) {
-        // jmp [cond] target
+        // syntax: jmp [cond] target
         let cond = '';
         let target = '';
         
@@ -216,56 +205,48 @@ class PioAssembler {
     }
 
     parseWait(args) {
-        // wait polarity gpio/pin/irq index
-        // wait 1 gpio 15
+        // syntax: wait polarity {gpio|pin|irq} index   e.g. wait 1 gpio 15
         const polarity = parseInt(args[0]);
         const source = args[1];
-        const index = args[2]; // can be number or 'rel' for irq
-        
+        const index = args[2]; // number, or 'rel' for irq
         return { type: 'WAIT', polarity, source, index };
     }
 
     parseIn(args) {
-        // in source, bit_count
         const source = args[0];
         const bitCount = parseInt(args[1]);
         return { type: 'IN', source, bitCount };
     }
 
     parseOut(args) {
-        // out dest, bit_count
         const dest = args[0];
         const bitCount = parseInt(args[1]);
         return { type: 'OUT', dest, bitCount };
     }
 
     parsePush(args) {
-        // push [ifull] [block/noblock]
+        // syntax: push [iffull] [block|noblock]
         const ifull = args.includes('ifull');
         const block = !args.includes('noblock');
         return { type: 'PUSH', ifull, block };
     }
 
     parsePull(args) {
-        // pull [ifempty] [block/noblock]
+        // syntax: pull [ifempty] [block|noblock]
         const ifempty = args.includes('ifempty');
         const block = !args.includes('noblock');
         return { type: 'PULL', ifempty, block };
     }
 
     parseMov(args) {
-        // mov dest, [op] src
-        // args: ["dest", "src"] or ["dest", "op", "src"]
-        // But my simple parser splits by space and removes commas.
-        // "mov x, ~y" -> ["x", "~y"] (if ~ is attached)
-        // "mov x, :: y" -> ["x", "::", "y"]
-        
+        // syntax: mov dest, [op] src
+        // The tokenizer splits on whitespace/commas, so an op fused to the src
+        // ("~y") arrives as 2 args; a spaced op (":: y") arrives as 3.
         const dest = args[0];
         let src = '';
         let op = '';
-        
+
         if (args.length === 2) {
-            // Check if src has op attached
             const s = args[1];
             if (s.startsWith('~') || s.startsWith('!')) {
                 op = '~';
@@ -285,26 +266,22 @@ class PioAssembler {
     }
 
     parseIrq(args) {
-        // irq [clear/wait] index [rel]
-        // irq 0
-        // irq clear 0
+        // syntax: irq [clear|wait] index [rel]   e.g. irq 0 / irq clear 0
         let clear = false;
         let wait = false;
         let indexStr = '';
-        
-        // Simple parsing
+
         for (let arg of args) {
             if (arg === 'clear') clear = true;
             else if (arg === 'wait') wait = true;
             else if (arg !== 'rel') indexStr = arg;
         }
-        
+
         const index = parseInt(indexStr);
         return { type: 'IRQ', clear, wait, index };
     }
 
     parseSet(args) {
-        // set dest, value
         const dest = args[0];
         const value = parseInt(args[1]);
         return { type: 'SET', dest, value };
