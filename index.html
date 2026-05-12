@@ -20,7 +20,38 @@
         function gtag() { dataLayer.push(arguments); }
         gtag('set', 'cookie_domain', 'none');
     </script>
-    <!-- Google Tag Manager -->
+    <!-- Google Analytics cookie domain override (host-only) -->
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('set','cookie_domain','none');
+</script>
+<!-- Consent geo override: auto-grant analytics outside EEA/UK -->
+<script>
+  (function(){
+    try {
+      var stored = null;
+      try { stored = localStorage.getItem('consent.choice'); } catch(e) {}
+      if (stored === 'denied') return;
+      if (stored === 'granted') {
+        gtag('consent','update',{
+          ad_storage:'granted', analytics_storage:'granted',
+          ad_user_data:'granted', ad_personalization:'granted'
+        });
+        return;
+      }
+      var tz = '';
+      try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch(e) {}
+      var isEEA = /^Europe\//.test(tz)
+               || tz === 'Asia/Nicosia'
+               || /^Atlantic\/(Reykjavik|Madeira|Azores|Canary)$/.test(tz);
+      if (!isEEA) {
+        gtag('consent','update',{ analytics_storage:'granted' });
+      }
+    } catch(e) {}
+  })();
+</script>
+<!-- Google Tag Manager -->
     <script>(function (w, d, s, l, i) {
             w[l] = w[l] || []; w[l].push({
                 'gtm.start':
