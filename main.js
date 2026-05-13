@@ -53,7 +53,17 @@ const canvas = document.getElementById('timing-chart');
 const ctx = canvas.getContext('2d');
 const timingChartTitle = document.getElementById('timing-chart-title');
 const timingPinSelector = document.getElementById('timing-pin-selector');
+const timingRegSelector = document.getElementById('timing-reg-selector');
 const selectedTimingPins = new Set();
+const selectedTimingRegs = new Set();
+
+const TIMING_REGS = [
+    { key: 'pc',  label: 'PC',  format: v => v.toString() },
+    { key: 'x',   label: 'X',   format: v => '0x' + (v >>> 0).toString(16).toUpperCase() },
+    { key: 'y',   label: 'Y',   format: v => '0x' + (v >>> 0).toString(16).toUpperCase() },
+    { key: 'osr', label: 'OSR', format: v => '0x' + (v >>> 0).toString(16).toUpperCase() },
+    { key: 'isr', label: 'ISR', format: v => '0x' + (v >>> 0).toString(16).toUpperCase() }
+];
 const programDisplay = document.getElementById('program-display');
 
 let runInterval = null;
@@ -119,6 +129,24 @@ for (let i = 31; i >= 0; i--) {
     });
 
     timingPinSelector.appendChild(bit);
+}
+
+for (const reg of TIMING_REGS) {
+    const btn = document.createElement('div');
+    btn.className = 'reg-toggle';
+    btn.textContent = reg.label;
+    btn.title = `Toggle ${reg.label} in Timing Chart`;
+    btn.addEventListener('click', () => {
+        if (selectedTimingRegs.has(reg.key)) {
+            selectedTimingRegs.delete(reg.key);
+            btn.classList.remove('selected');
+        } else {
+            selectedTimingRegs.add(reg.key);
+            btn.classList.add('selected');
+        }
+        drawTimingChart();
+    });
+    timingRegSelector.appendChild(btn);
 }
 
 btnAssemble.addEventListener('click', assembleAndReset);
@@ -550,12 +578,7 @@ function updateUI(isStep = false) {
 }
 
 function drawTimingChart() {
-    const width = canvas.width;
-    const height = canvas.height;
-    ctx.clearRect(0, 0, width, height);
-
     const history = emulator.history;
-    if (history.length === 0) return;
 
     let pinsToShow = [];
 
@@ -576,23 +599,54 @@ function drawTimingChart() {
     pinsToShow.sort((a, b) => a - b);
     pinsToShow = [...new Set(pinsToShow)];
 
+    const regsToShow = TIMING_REGS.filter(r => selectedTimingRegs.has(r.key));
+
     if (pinsToShow.length > 0) {
         const min = pinsToShow[0];
         const max = pinsToShow[pinsToShow.length - 1];
+        let titleStr;
         if (pinsToShow.length === (max - min + 1)) {
-            timingChartTitle.textContent = `Timing Chart (GPIO ${min}-${max})`;
+            titleStr = `GPIO ${min}-${max}`;
         } else {
-            timingChartTitle.textContent = `Timing Chart (GPIO ${pinsToShow.join(',')})`;
+            titleStr = `GPIO ${pinsToShow.join(',')}`;
         }
+        if (regsToShow.length > 0) {
+            titleStr += ` + ${regsToShow.map(r => r.label).join(', ')}`;
+        }
+        timingChartTitle.textContent = `Timing Chart (${titleStr})`;
+    } else if (regsToShow.length > 0) {
+        timingChartTitle.textContent = `Timing Chart (${regsToShow.map(r => r.label).join(', ')})`;
     }
+
+    const numPins = pinsToShow.length;
+    const numRegs = regsToShow.length;
+    const totalRows = numPins + numRegs;
+
+    const PIN_ROW_HEIGHT = 30;
+    const REG_ROW_HEIGHT = 28;
+    const desiredHeight = Math.max(200, numPins * PIN_ROW_HEIGHT + numRegs * REG_ROW_HEIGHT);
+    if (canvas.height !== desiredHeight) {
+        canvas.height = desiredHeight;
+    }
+
+    const width = canvas.width;
+    const height = canvas.height;
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, width, height);
+
+    if (history.length === 0 || totalRows === 0) return;
 
     const maxCycles = 50;
     const startIndex = Math.max(0, history.length - maxCycles);
     const visibleHistory = history.slice(startIndex);
 
     const stepX = width / maxCycles;
-    const numPins = pinsToShow.length;
-    const rowHeight = height / numPins;
+
+    const pinAreaHeight = numPins > 0 ? (height * numPins) / totalRows : 0;
+    const regAreaHeight = height - pinAreaHeight;
+    const pinRowHeight = numPins > 0 ? pinAreaHeight / numPins : 0;
+    const regRowHeight = numRegs > 0 ? regAreaHeight / numRegs : 0;
 
     ctx.lineWidth = 1;
     for (let t = 0; t <= maxCycles; t++) {
@@ -607,16 +661,14 @@ function drawTimingChart() {
 
     ctx.strokeStyle = '#ccc';
     ctx.lineWidth = 1;
+    ctx.font = '12px Consolas';
 
     for (let i = 0; i < numPins; i++) {
+        const yCenter = i * pinRowHeight + pinRowHeight / 2;
         ctx.beginPath();
-        ctx.moveTo(0, i * rowHeight + rowHeight / 2);
-        ctx.lineTo(width, i * rowHeight + rowHeight / 2);
+        ctx.moveTo(0, yCenter);
+        ctx.lineTo(width, yCenter);
         ctx.stroke();
-
-        ctx.fillStyle = '#000';
-        ctx.font = '12px Consolas';
-        ctx.fillText(`GPIO ${pinsToShow[i]}`, 5, i * rowHeight + 15);
     }
 
     ctx.strokeStyle = '#007acc';
@@ -624,11 +676,11 @@ function drawTimingChart() {
 
     for (let i = 0; i < numPins; i++) {
         const pin = pinsToShow[i];
+        const yCenter = i * pinRowHeight + pinRowHeight / 2;
         ctx.beginPath();
         for (let t = 0; t < visibleHistory.length; t++) {
             const state = (visibleHistory[t].pins >> pin) & 1;
             const x = t * stepX;
-            const yCenter = i * rowHeight + rowHeight / 2;
             const y = state ? yCenter - 10 : yCenter + 10;
 
             if (t === 0) {
@@ -642,6 +694,108 @@ function drawTimingChart() {
             ctx.lineTo(x + stepX, y);
         }
         ctx.stroke();
+    }
+
+    ctx.font = '12px Consolas';
+    for (let i = 0; i < numPins; i++) {
+        const label = `GPIO ${pinsToShow[i]}`;
+        const yBaseline = i * pinRowHeight + 15;
+        const tw = ctx.measureText(label).width;
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(3, yBaseline - 11, tw + 4, 14);
+        ctx.fillStyle = '#000';
+        ctx.fillText(label, 5, yBaseline);
+    }
+
+    for (let i = 0; i < numRegs; i++) {
+        const reg = regsToShow[i];
+        const yTop = pinAreaHeight + i * regRowHeight + 4;
+        const yBot = pinAreaHeight + (i + 1) * regRowHeight - 4;
+        const yMid = (yTop + yBot) / 2;
+
+        ctx.font = '12px Consolas';
+        const labelOffsetX = ctx.measureText(reg.label).width + 12;
+
+        ctx.strokeStyle = '#c2185b';
+        ctx.lineWidth = 1.5;
+        ctx.fillStyle = '#000';
+
+        let segStart = 0;
+        for (let t = 1; t <= visibleHistory.length; t++) {
+            const ended = (t === visibleHistory.length) ||
+                          (visibleHistory[t][reg.key] !== visibleHistory[t - 1][reg.key]);
+            if (!ended) continue;
+
+            const xStart = segStart * stepX;
+            const xEnd = t * stepX;
+
+            ctx.beginPath();
+            ctx.moveTo(xStart, yTop);
+            ctx.lineTo(xEnd, yTop);
+            ctx.moveTo(xStart, yBot);
+            ctx.lineTo(xEnd, yBot);
+            ctx.stroke();
+
+            if (t < visibleHistory.length) {
+                ctx.beginPath();
+                ctx.moveTo(xEnd, yTop);
+                ctx.lineTo(xEnd, yBot);
+                ctx.stroke();
+            }
+
+            const text = reg.format(visibleHistory[segStart][reg.key]);
+            const segWidth = xEnd - xStart;
+            const segHeight = yBot - yTop;
+            const visStart = (segStart === 0) ? Math.max(xStart, labelOffsetX) : xStart;
+            const visWidth = xEnd - visStart;
+
+            ctx.font = '12px Consolas';
+            const twH = ctx.measureText(text).width;
+            if (twH + 4 < visWidth) {
+                ctx.fillText(text, (visStart + xEnd) / 2 - twH / 2, yMid + 4);
+            } else {
+                const compact = text.startsWith('0x') ? text.slice(2) : text;
+                let placed = false;
+                for (let fs = 12; fs >= 8; fs--) {
+                    ctx.font = `${fs}px Consolas`;
+                    const twV = ctx.measureText(compact).width;
+                    if (twV + 2 < segHeight && fs + 1 < segWidth) {
+                        ctx.save();
+                        ctx.textBaseline = 'middle';
+                        ctx.translate((xStart + xEnd) / 2, yMid);
+                        ctx.rotate(-Math.PI / 2);
+                        ctx.fillText(compact, -twV / 2, 0);
+                        ctx.restore();
+                        placed = true;
+                        break;
+                    }
+                }
+                ctx.font = '12px Consolas';
+                if (!placed && segWidth > 8) {
+                    let truncated = text;
+                    while (truncated.length > 1 && ctx.measureText(truncated + '…').width + 4 >= visWidth) {
+                        truncated = truncated.slice(0, -1);
+                    }
+                    if (truncated.length > 0 && truncated !== text) {
+                        const display = truncated + '…';
+                        const dw = ctx.measureText(display).width;
+                        if (dw + 4 < visWidth) {
+                            ctx.fillText(display, (visStart + xEnd) / 2 - dw / 2, yMid + 4);
+                        }
+                    }
+                }
+            }
+
+            segStart = t;
+        }
+
+        ctx.font = '12px Consolas';
+        const tw = ctx.measureText(reg.label).width;
+        const yBaseline = yTop + 12;
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(3, yBaseline - 11, tw + 4, 14);
+        ctx.fillStyle = '#000';
+        ctx.fillText(reg.label, 5, yBaseline);
     }
 }
 

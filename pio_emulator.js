@@ -110,7 +110,14 @@ class PioEmulator {
 
         this.history.push({
             clock: this.clock,
-            pins: this.pins
+            pins: this.pins,
+            pc: this.pc,
+            x: this.x,
+            y: this.y,
+            osr: this.osr,
+            osrCount: this.osrCount,
+            isr: this.isr,
+            isrCount: this.isrCount
         });
 
         if (this.delay > 0) {

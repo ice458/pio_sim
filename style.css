@@ -328,3 +328,26 @@ button:disabled {
     color: white;
     border-color: #1976d2;
 }
+
+.reg-selector {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.reg-selector .reg-toggle {
+    cursor: pointer;
+    padding: 3px 8px;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    background-color: #fff;
+    font-family: Consolas, monospace;
+    font-size: 0.85em;
+    user-select: none;
+}
+
+.reg-selector .reg-toggle.selected {
+    background-color: #2196f3;
+    color: white;
+    border-color: #1976d2;
+}
