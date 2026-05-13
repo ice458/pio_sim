@@ -594,6 +594,17 @@ function drawTimingChart() {
     const numPins = pinsToShow.length;
     const rowHeight = height / numPins;
 
+    ctx.lineWidth = 1;
+    for (let t = 0; t <= maxCycles; t++) {
+        const x = t * stepX;
+        const absClock = startIndex + t;
+        ctx.strokeStyle = (absClock % 5 === 0) ? '#bbb' : '#eee';
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+    }
+
     ctx.strokeStyle = '#ccc';
     ctx.lineWidth = 1;
 
