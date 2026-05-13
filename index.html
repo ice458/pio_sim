@@ -302,8 +302,16 @@
                 <div class="pin-output">
                     <h4>GPIO State (32-bit)</h4>
                     <div class="hex-display">Value: <span id="gpio-hex-val">0x00000000</span></div>
+                    <div class="hex-display sync-ff-row" title="Stage 1 of the 2-FF input synchronizer (latches the pad value each clock).">
+                        FF1: <span id="gpio-ff1-hex-val">0x00000000</span>
+                    </div>
+                    <div class="hex-display sync-ff-row" title="Stage 2 — the value PIO reads when INPUT_SYNC_BYPASS=0 for that pin.">
+                        FF2: <span id="gpio-ff2-hex-val">0x00000000</span>
+                    </div>
                     <div style="font-size: 0.8em; color: #666; margin-bottom: 5px;">
-                        Click: Toggle Input Value.<br>Right-Click/Shift+Click: Toggle Direction (In/Out).
+                        Click: Toggle Input Value.<br>
+                        Right-Click/Shift+Click: Toggle Direction (In/Out).<br>
+                        Alt+Click: Toggle INPUT_SYNC_BYPASS for this GPIO (2-cycle synchronizer).
                         <br>
                         <span
                             style="border: 1px solid #4caf50; background: #4caf50; width: 10px; height: 10px; display: inline-block;"></span>
@@ -317,8 +325,17 @@
                         <span
                             style="border: 1px dashed #2196f3; background: #2196f3; width: 10px; height: 10px; display: inline-block;"></span>
                         Input High
+                        <span class="legend-synced-sample">S</span>
+                        Synchronizer engaged (hardware default; +2 cycle input latency)
                     </div>
                     <div class="gpio-indicators" id="gpio-indicators"> </div>
+                    <div class="sync-mode-row">
+                        <span style="color: #555;">INPUT_SYNC_BYPASS:</span>
+                        <button id="btn-bypass-all" type="button"
+                            title="Bypass synchronizer on all GPIOs (zero input latency — simulator default).">Bypass all</button>
+                        <button id="btn-engage-sync-all" type="button"
+                            title="Engage 2-FF synchronizer on all GPIOs (hardware default — adds 2-cycle input latency).">Engage all</button>
+                    </div>
                 </div>
 
                 <h3 id="timing-chart-title">Timing Chart (GPIO 0-3)</h3>

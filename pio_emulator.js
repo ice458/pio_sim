@@ -3,6 +3,10 @@ class PioEmulator {
         this.instructions = [];
         this.wrapTarget = 0;
         this.wrap = 0;
+        // 1 = bypass synchronizer (matches the simulator's historical zero-delay
+        // behavior). Hardware default is 0 (engaged); we preserve simulator UX
+        // and let the user opt into the 2-cycle delay per pin.
+        this.inputSyncBypass = 0xFFFFFFFF;
         this.reset();
     }
 
@@ -23,6 +27,11 @@ class PioEmulator {
 
         this.pins = 0;
         this.inputs = 0;
+        // 2-FF input synchronizer stages — what the PIO sees lags `inputs` by
+        // two clocks on bits where INPUT_SYNC_BYPASS=0. ff2 is the value PIO
+        // reads this cycle; ff1 is the intermediate latch.
+        this.inputsFf1 = 0;
+        this.inputsFf2 = 0;
         this.pindirs = 0; // 1=out, 0=in
         this.outBase = 0;
         this.setBase = 0;
@@ -65,14 +74,18 @@ class PioEmulator {
         this.reset();
     }
 
+    // What the PIO state machine observes on `pin` this cycle. Output pins
+    // read back the driven value directly; input pins go through the 2-FF
+    // synchronizer unless their INPUT_SYNC_BYPASS bit is set.
     getPinState(pin) {
         pin = pin & 0x1F;
         const isOut = (this.pindirs >> pin) & 1;
         if (isOut) {
             return (this.pins >> pin) & 1;
-        } else {
-            return (this.inputs >> pin) & 1;
         }
+        const bypass = (this.inputSyncBypass >> pin) & 1;
+        const source = bypass ? this.inputs : this.inputsFf2;
+        return (source >> pin) & 1;
     }
 
     getAllPinStates() {
@@ -119,6 +132,11 @@ class PioEmulator {
             isr: this.isr,
             isrCount: this.isrCount
         });
+
+        // Advance the input synchronizer on every PIO clock — including delay
+        // and stall cycles. Reads later in this step see the new ff2.
+        this.inputsFf2 = this.inputsFf1 >>> 0;
+        this.inputsFf1 = this.inputs >>> 0;
 
         if (this.delay > 0) {
             this.delay--;

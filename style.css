@@ -190,6 +190,7 @@ button:disabled {
 }
 
 .gpio-bit {
+    position: relative;
     box-sizing: border-box;
     width: calc((100% - 44px) / 16);
     aspect-ratio: 1;
@@ -202,6 +203,56 @@ button:disabled {
     color: #666;
     cursor: pointer;
     user-select: none;
+}
+
+.gpio-bit.input.synced::after {
+    content: 'S';
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    width: 8px;
+    height: 8px;
+    line-height: 8px;
+    text-align: center;
+    font-size: 7px;
+    font-weight: bold;
+    background-color: #c2185b;
+    color: #fff;
+    border-radius: 50%;
+    pointer-events: none;
+}
+
+.sync-ff-row {
+    font-size: 0.85em;
+    color: #c2185b;
+}
+
+.sync-mode-row {
+    margin-top: 8px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    font-size: 0.8em;
+}
+
+.sync-mode-row button {
+    padding: 2px 8px;
+    font-size: 0.85em;
+}
+
+.legend-synced-sample {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    line-height: 12px;
+    text-align: center;
+    font-size: 9px;
+    font-weight: bold;
+    background-color: #c2185b;
+    color: #fff;
+    border-radius: 50%;
+    vertical-align: middle;
 }
 
 .gpio-bit.on {

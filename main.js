@@ -46,6 +46,12 @@ const cfgStatusN = document.getElementById('cfg-status-n');
 
 const gpioHexVal = document.getElementById('gpio-hex-val');
 const gpioIndicators = document.getElementById('gpio-indicators');
+const gpioFf1HexVal = document.getElementById('gpio-ff1-hex-val');
+const gpioFf2HexVal = document.getElementById('gpio-ff2-hex-val');
+const gpioFf1Row = gpioFf1HexVal.parentElement;
+const gpioFf2Row = gpioFf2HexVal.parentElement;
+const btnBypassAll = document.getElementById('btn-bypass-all');
+const btnEngageSyncAll = document.getElementById('btn-engage-sync-all');
 
 const irqFlags = document.getElementById('irq-flags');
 
@@ -80,7 +86,10 @@ for (let i = 31; i >= 0; i--) {
     bit.title = `GPIO ${i}`;
 
     bit.addEventListener('click', (e) => {
-        if (e.shiftKey) {
+        if (e.altKey) {
+            emulator.inputSyncBypass ^= (1 << i);
+            emulator.inputSyncBypass >>>= 0;
+        } else if (e.shiftKey) {
             emulator.pindirs ^= (1 << i);
         } else {
             emulator.inputs ^= (1 << i);
@@ -153,6 +162,15 @@ btnAssemble.addEventListener('click', assembleAndReset);
 btnStep.addEventListener('click', step);
 btnRunStop.addEventListener('click', toggleRunStop);
 btnReset.addEventListener('click', reset);
+
+btnBypassAll.addEventListener('click', () => {
+    emulator.inputSyncBypass = 0xFFFFFFFF;
+    updateUI();
+});
+btnEngageSyncAll.addEventListener('click', () => {
+    emulator.inputSyncBypass = 0;
+    updateUI();
+});
 
 document.getElementById('run-speed').addEventListener('change', () => {
     if (runInterval) {
@@ -537,16 +555,35 @@ function updateUI(isStep = false) {
     const allPins = emulator.getAllPinStates();
     gpioHexVal.textContent = '0x' + (allPins >>> 0).toString(16).toUpperCase().padStart(8, '0');
 
+    const bypassMask = emulator.inputSyncBypass >>> 0;
+    const ff1 = emulator.inputsFf1 >>> 0;
+    const ff2 = emulator.inputsFf2 >>> 0;
+    gpioFf1HexVal.textContent = '0x' + ff1.toString(16).toUpperCase().padStart(8, '0');
+    gpioFf2HexVal.textContent = '0x' + ff2.toString(16).toUpperCase().padStart(8, '0');
+    // FF stages are dead weight when every pin bypasses the synchronizer.
+    const ffVisible = bypassMask !== 0xFFFFFFFF ? '' : 'none';
+    gpioFf1Row.style.display = ffVisible;
+    gpioFf2Row.style.display = ffVisible;
+
     for (let i = 0; i < 32; i++) {
         const bit = document.getElementById(`gpio-bit-${i}`);
         const isOut = (emulator.pindirs >> i) & 1;
         const val = (allPins >> i) & 1;
+        const bypass = (bypassMask >> i) & 1;
 
         bit.className = 'gpio-bit';
         if (!isOut) bit.classList.add('input');
         if (val) bit.classList.add('on');
+        // Mark inputs whose synchronizer is engaged (hardware default).
+        if (!isOut && !bypass) bit.classList.add('synced');
 
-        bit.title = `GPIO ${i}: ${isOut ? 'Output' : 'Input'} = ${val}`;
+        const ff2Bit = (ff2 >> i) & 1;
+        const syncNote = isOut
+            ? ''
+            : (bypass
+                ? ' [SYNC BYPASSED]'
+                : ` [SYNC ENGAGED — PIO sees ${ff2Bit}]`);
+        bit.title = `GPIO ${i}: ${isOut ? 'Output' : 'Input'} = ${val}${syncNote}`;
     }
 
     for (let i = 0; i < 8; i++) {
