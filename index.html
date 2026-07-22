@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ja">
+<html lang="en">
 
 <head>
     <!-- Consent Mode default (runs before GTM) -->
@@ -58,11 +58,11 @@
 
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RP2040/RP2350 PIO Simulator | PIOシミュレータ - ice458の物置き</title>
+    <title>RP2040/RP2350 PIO Simulator</title>
     <meta name="description"
-        content="Raspberry Pi Pico (RP2040) / Pico 2 (RP2350) の PIO アセンブリコードをブラウザ上で実行できるシミュレータです。ステップ実行、レジスタ・FIFO・GPIO・タイミングチャートの可視化に対応し、インストール不要で動作します。">
+        content="A browser-based PIO assembly simulator for Raspberry Pi Pico (RP2040) and Pico 2 (RP2350). Test, debug, and visualize PIO state machines in real-time.">
     <meta name="keywords"
-        content="RP2040,RP2350,PIO,シミュレータ,simulator,アセンブラ,assembler,Raspberry Pi Pico,Pico 2,ピオ,ステートマシン,ice458">
+        content="RP2040,RP2350,PIO,simulator,assembler,Raspberry Pi Pico,Pico 2,state machine">
     <meta name="author" content="ice458">
 
     <!-- Canonical URL -->
@@ -71,17 +71,17 @@
     <!-- Open Graph / Facebook -->
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://ice458.github.io/tools/pio_sim/">
-    <meta property="og:title" content="RP2040/RP2350 PIO Simulator | PIOシミュレータ">
+    <meta property="og:title" content="RP2040/RP2350 PIO Simulator">
     <meta property="og:description"
-        content="Raspberry Pi Pico (RP2040) / Pico 2 (RP2350) の PIO アセンブリコードをブラウザ上で実行できるシミュレータです。ステップ実行、レジスタ・FIFO・GPIO・タイミングチャートの可視化に対応します。">
+        content="A browser-based PIO assembly simulator for RP2040 and RP2350. Visualize registers, FIFOs, and timing.">
     <meta property="og:image" content="https://ice458.github.io/tools/pio_sim/PIO.png">
 
     <!-- Twitter -->
     <meta property="twitter:card" content="summary_large_image">
     <meta property="twitter:url" content="https://ice458.github.io/tools/pio_sim/">
-    <meta property="twitter:title" content="RP2040/RP2350 PIO Simulator | PIOシミュレータ">
+    <meta property="twitter:title" content="RP2040/RP2350 PIO Simulator">
     <meta property="twitter:description"
-        content="Raspberry Pi Pico (RP2040) / Pico 2 (RP2350) の PIO アセンブリコードをブラウザ上で実行できるシミュレータです。">
+        content="A browser-based PIO assembly simulator for RP2040 and RP2350.">
     <meta property="twitter:image" content="https://ice458.github.io/tools/pio_sim/PIO.png">
 
     <link rel="stylesheet" href="style.css">
@@ -104,14 +104,14 @@
       "@context": "https://schema.org",
       "@type": "SoftwareApplication",
       "name": "RP2040/RP2350 PIO Simulator",
-      "alternateName": "PIOシミュレータ",
-      "description": "Raspberry Pi Pico (RP2040) / Pico 2 (RP2350) の PIO アセンブリコードをブラウザ上で実行・可視化できるシミュレータ。",
+      "alternateName": "PIO Simulator",
+      "description": "A browser-based PIO assembly simulator for Raspberry Pi Pico (RP2040) and Pico 2 (RP2350).",
       "url": "https://ice458.github.io/tools/pio_sim/",
       "image": "https://ice458.github.io/tools/pio_sim/PIO.png",
       "applicationCategory": "DeveloperApplication",
       "operatingSystem": "Web Browser",
       "browserRequirements": "Requires JavaScript",
-      "inLanguage": "ja",
+      "inLanguage": "en",
       "isAccessibleForFree": true,
       "offers": {
         "@type": "Offer",
@@ -137,36 +137,21 @@
             </div> -->
 
             <details class="about-section" style="margin-top: 32px; font-size: 0.85em; color: #777; line-height: 1.7;">
-                <summary style="cursor: pointer;">このツールについて</summary>
+                <summary style="cursor: pointer;">About this tool</summary>
                 <p style="margin: 8px 0 0 0;">
-                    本ツールは、Raspberry Pi Pico に搭載されている <strong>RP2040</strong> および Pico 2 に搭載されている <strong>RP2350</strong>
-                    のプログラマブル I/O (<strong>PIO</strong>) 用アセンブリコードを、Web
-                    ブラウザ上で実行・検証できるシミュレータです。インストール不要で、開いたページ内ですぐにステートマシンの挙動を確認できます。
+                    A web-based emulator for the <strong>RP2040</strong> and <strong>RP2350</strong> Programmable I/O (<strong>PIO</strong>). Test and debug your PIO assembly code directly in the browser with real-time visualization of registers, FIFOs, GPIOs, and timing. 
                 </p>
                 <p>
-                    PIO は CPU から独立して動作する小さなステートマシンで、I2S・WS2812・任意のシリアルプロトコルなど、タイミングがシビアな I/O 処理を CPU
-                    を介さずに実装できる強力な周辺機能です。一方で、専用の小さな命令セット・サイドセット・遅延・FIFOなどといった概念が独特で、実機書き込み前に挙動を理解するのは難しい部分があります。本シミュレータは、コードを
-                    1 命令ずつステップ実行しながら内部状態を観察できるようにすることで、この理解を助けることを目的としています。
-                </p>
-                <p>
-                    シミュレータは Pico SDK の <code>pioasm</code> と互換性のある記法でアセンブリを受け付け、<code>jmp</code> / <code>wait</code> /
-                    <code>in</code> / <code>out</code> / <code>push</code> / <code>pull</code> / <code>mov</code> /
-                    <code>irq</code> / <code>set</code> といった全命令と、サイドセット、<code>.wrap</code> /
-                    <code>.wrap_target</code>、遅延サイクル、IN/OUT/SET ピンマッピングなどに対応しています。実行中はステートマシンのレジスタ (X / Y / OSR / ISR /
-                    PC) ・TX/RX FIFO ・GPIO 0–31 の入出力状態・タイミングチャート・IRQ フラグをリアルタイムに可視化します。
-                </p>
-                <p>
-                    ブラウザ上で完結する純粋なクライアントサイド実装で、入力したコードや状態は外部に送信されません。RP2040/RP2350 の PIO プログラム開発、Pico SDK
-                    での学習、教材や勉強会での挙動説明などに自由にご利用ください。
+                    Fully client-side. Supports the standard <code>pioasm</code> syntax including side-set, delays, and RP2350 extensions.
                 </p>
             </details>
 
             <details style="font-size: 0.85em; color: #777; margin-top: 4px;">
-                <summary style="cursor: pointer;">未対応の機能</summary>
+                <summary style="cursor: pointer;">Unsupported Features</summary>
                 <ul style="margin: 4px 0 0 1.2em; padding: 0;">
-                    <li><code>out exec</code> / <code>mov exec</code>（命令の一時注入）</li>
-                    <li>IRQ の <code>rel</code> 修飾子（マルチ SM 相対アドレッシング）</li>
-                    <li>サイドセット bit 幅に応じた delay 最大値のアセンブラ側チェック</li>
+                    <li><code>out exec</code> / <code>mov exec</code></li>
+                    <li>IRQ <code>rel</code> flag (Multi-SM addressing)</li>
+                    <li>Assembler-side max delay validation based on side-set width</li>
                 </ul>
             </details>
         </header>
