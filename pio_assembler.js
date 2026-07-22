@@ -1,6 +1,8 @@
 class PioAssembler {
     constructor() {
         this.labels = {};
+        this.defines = {};
+        this.origin = null;
         this.instructions = [];
         this.programName = "program";
         this.wrapTarget = 0;
@@ -12,6 +14,8 @@ class PioAssembler {
 
     assemble(sourceCode) {
         this.labels = {};
+        this.defines = {};
+        this.origin = null;
         this.instructions = [];
         this.wrapTarget = -1;
         this.wrap = -1;
@@ -87,6 +91,8 @@ class PioAssembler {
         return {
             instructions: this.instructions,
             labels: this.labels,
+            defines: this.defines,
+            origin: this.origin,
             wrapTarget: this.wrapTarget,
             wrap: this.wrap,
             sidesetCount: this.sidesetCount,
@@ -116,8 +122,32 @@ class PioAssembler {
                 if (parts.includes('opt')) this.sidesetOpt = true;
                 if (parts.includes('pindirs')) this.sidesetPindirs = true;
                 break;
-            // TODO: .define, .origin, etc.
+            case '.define':
+                // .define name value  — defines a named constant
+                if (parts.length >= 3) {
+                    const name = parts[1];
+                    let val = parts[2];
+                    // Support expressions referencing other defines
+                    if (val in this.defines) {
+                        this.defines[name] = this.defines[val];
+                    } else {
+                        this.defines[name] = parseInt(val);
+                    }
+                }
+                break;
+            case '.origin':
+                // .origin N — set program origin offset
+                if (parts.length >= 2) {
+                    this.origin = parseInt(parts[1]);
+                }
+                break;
         }
+    }
+
+    resolveValue(str) {
+        if (str in this.defines) return this.defines[str];
+        if (str in this.labels) return this.labels[str];
+        return parseInt(str);
     }
 
     parseInstruction(line, pc) {
@@ -205,22 +235,42 @@ class PioAssembler {
     }
 
     parseWait(args) {
-        // syntax: wait polarity {gpio|pin|irq} index   e.g. wait 1 gpio 15
-        const polarity = parseInt(args[0]);
+        // syntax: wait polarity {gpio|pin|irq|jmppin} index [rel]
+        // For irq: wait polarity irq index [rel]
+        // For jmppin (RP2350): wait polarity jmppin [count]
+        const polarity = this.resolveValue(args[0]);
         const source = args[1];
-        const index = args[2]; // number, or 'rel' for irq
-        return { type: 'WAIT', polarity, source, index };
+        let index = null;
+        let rel = false;
+
+        if (source === 'jmppin') {
+            // RP2350: WAIT JMPPIN — optional count argument
+            index = args.length > 2 ? this.resolveValue(args[2]) : 0;
+        } else if (source === 'irq') {
+            // Parse index and optional rel
+            for (let i = 2; i < args.length; i++) {
+                if (args[i] === 'rel') {
+                    rel = true;
+                } else {
+                    index = this.resolveValue(args[i]);
+                }
+            }
+        } else {
+            index = this.resolveValue(args[2]);
+        }
+
+        return { type: 'WAIT', polarity, source, index, rel };
     }
 
     parseIn(args) {
         const source = args[0];
-        const bitCount = parseInt(args[1]);
+        const bitCount = this.resolveValue(args[1]);
         return { type: 'IN', source, bitCount };
     }
 
     parseOut(args) {
         const dest = args[0];
-        const bitCount = parseInt(args[1]);
+        const bitCount = this.resolveValue(args[1]);
         return { type: 'OUT', dest, bitCount };
     }
 
@@ -266,24 +316,35 @@ class PioAssembler {
     }
 
     parseIrq(args) {
-        // syntax: irq [clear|wait] index [rel]   e.g. irq 0 / irq clear 0
+        // syntax: irq [clear|wait|set] index [rel]   e.g. irq 0 / irq clear 0
+        // RP2350 also supports: irq [prev|next] index
         let clear = false;
         let wait = false;
+        let rel = false;
+        let prev = false;
+        let next = false;
         let indexStr = '';
 
         for (let arg of args) {
             if (arg === 'clear') clear = true;
             else if (arg === 'wait') wait = true;
-            else if (arg !== 'rel') indexStr = arg;
+            else if (arg === 'set') { /* default behavior, no flag needed */ }
+            else if (arg === 'rel') rel = true;
+            else if (arg === 'prev') prev = true;
+            else if (arg === 'next') next = true;
+            else indexStr = arg;
         }
 
-        const index = parseInt(indexStr);
-        return { type: 'IRQ', clear, wait, index };
+        // RP2350: prev/next imply rel-like behavior
+        if (prev || next) rel = true;
+
+        const index = this.resolveValue(indexStr);
+        return { type: 'IRQ', clear, wait, rel, prev, next, index };
     }
 
     parseSet(args) {
         const dest = args[0];
-        const value = parseInt(args[1]);
+        const value = this.resolveValue(args[1]);
         return { type: 'SET', dest, value };
     }
 }

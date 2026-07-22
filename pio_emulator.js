@@ -53,6 +53,8 @@ class PioEmulator {
 
         this.history = [];
         this.irq = 0;
+        this.irqPrev = 0;
+        this.irqNext = 0;
         this.irqWaitStalled = false; // sticky while an IRQ wait is stalling
         this.irqWaitPc = -1;
         this.status = 'stopped';
@@ -138,6 +140,34 @@ class PioEmulator {
         this.inputsFf2 = this.inputsFf1 >>> 0;
         this.inputsFf1 = this.inputs >>> 0;
 
+        // Autopush/Autopull are evaluated before the instruction starts.
+        // If a FIFO is full/empty respectively, the machine stalls on this cycle.
+        let stalled = false;
+        if (this.autoPush && this.isrCount >= this.effPushThresh()) {
+            if (this.rxFifo.length < 4) {
+                this.rxFifo.push(this.isr);
+                this.isr = 0;
+                this.isrCount = 0;
+            } else {
+                stalled = true;
+            }
+        }
+
+        if (this.autoPull && this.osrCount >= this.effPullThresh()) {
+            if (this.txFifo.length > 0) {
+                this.osr = this.txFifo.shift();
+                this.osrCount = 0;
+            } else {
+                stalled = true;
+            }
+        }
+
+        if (stalled) {
+            this.status = 'stalled';
+            this.clock++;
+            return;
+        }
+
         if (this.delay > 0) {
             this.delay--;
             this.clock++;
@@ -167,7 +197,7 @@ class PioEmulator {
             }
         }
 
-        if (applySideSet) {
+        if (applySideSet && this.status !== 'stalled') {
             const val = sideSetVal;
             for (let i = 0; i < this.sidesetCount; i++) {
                 const pin = (this.sidesetBase + i) % 32;
@@ -276,17 +306,13 @@ class PioEmulator {
             case '': conditionMet = true; break;
             case '!x': conditionMet = (this.x === 0); break;
             case 'x--': 
-                if (this.x !== 0) {
-                    conditionMet = true;
-                    this.x = (this.x - 1) >>> 0;
-                }
+                conditionMet = (this.x !== 0);
+                this.x = (this.x - 1) >>> 0;
                 break;
             case '!y': conditionMet = (this.y === 0); break;
             case 'y--':
-                if (this.y !== 0) {
-                    conditionMet = true;
-                    this.y = (this.y - 1) >>> 0;
-                }
+                conditionMet = (this.y !== 0);
+                this.y = (this.y - 1) >>> 0;
                 break;
             case 'x!=y': conditionMet = (this.x !== this.y); break;
             case 'pin': conditionMet = (this.getPinState(this.jmpPin) === 1); break;
@@ -308,13 +334,22 @@ class PioEmulator {
             const index = parseInt(instr.index);
             const pin = (this.inBase + index) & 0x1F;
             val = this.getPinState(pin);
+        } else if (instr.source === 'jmppin') {
+            const offset = parseInt(instr.index) || 0;
+            const pin = (this.jmpPin + offset) & 0x1F;
+            val = this.getPinState(pin);
         } else if (instr.source === 'irq') {
-            const index = parseInt(instr.index) & 7;
-            val = (this.irq >> index) & 1;
+            let index = parseInt(instr.index) & 7;
+
+            if (instr.prev) val = (this.irqPrev >> index) & 1;
+            else if (instr.next) val = (this.irqNext >> index) & 1;
+            else val = (this.irq >> index) & 1;
 
             // WAIT 1 IRQ auto-clears the flag once observed high.
             if (instr.polarity === 1 && val === 1) {
-                this.irq &= ~(1 << index);
+                if (instr.prev) this.irqPrev &= ~(1 << index);
+                else if (instr.next) this.irqNext &= ~(1 << index);
+                else this.irq &= ~(1 << index);
             }
         }
 
@@ -341,6 +376,11 @@ class PioEmulator {
             val = this.isr;
         } else if (instr.source === 'osr') {
             val = this.osr;
+        } else if (instr.source === 'status') {
+            const level = this.statusSel === 1
+                ? this.rxFifo.length
+                : this.txFifo.length;
+            val = level < this.statusN ? 0xFFFFFFFF : 0;
         }
 
         const bitCount = instr.bitCount;
@@ -368,32 +408,12 @@ class PioEmulator {
         let newIsrCount = this.isrCount + bitCount;
         if (newIsrCount > 32) newIsrCount = 32;
 
-        if (this.autoPush && newIsrCount >= this.effPushThresh()) {
-            if (this.rxFifo.length < 4) {
-                this.rxFifo.push(newIsr);
-                this.isr = 0;
-                this.isrCount = 0;
-                return true;
-            } else {
-                return false;
-            }
-        }
-        
         this.isr = newIsr;
         this.isrCount = newIsrCount;
         return true;
     }
 
     executeOut(instr) {
-        if (this.autoPull && this.osrCount >= this.effPullThresh()) {
-            if (this.txFifo.length > 0) {
-                this.osr = this.txFifo.shift();
-                this.osrCount = 0;
-            } else {
-                return false;
-            }
-        }
-
         const bitCount = instr.bitCount;
         const mask = bitCount === 32 ? 0xFFFFFFFF : (1 << bitCount) - 1;
 
@@ -451,23 +471,8 @@ class PioEmulator {
                 this.pcOverride = data;
                 return true;
             case 'isr': {
-                // OUT ISR shifts using inShiftDir, not outShiftDir.
-                let newIsr = this.isr;
-                if (this.inShiftDir === 'right') {
-                    if (bitCount === 32) {
-                        newIsr = data;
-                    } else {
-                        newIsr = (this.isr >>> bitCount) | (data << (32 - bitCount));
-                    }
-                } else {
-                    if (bitCount === 32) {
-                        newIsr = data;
-                    } else {
-                        newIsr = (this.isr << bitCount) | data;
-                    }
-                }
-                this.isr = newIsr >>> 0;
-                this.isrCount += bitCount;
+                this.isr = data >>> 0;
+                this.isrCount = bitCount;
                 if (this.isrCount > 32) this.isrCount = 32;
                 break;
             }
@@ -535,7 +540,17 @@ class PioEmulator {
     executeMov(instr) {
         let val = 0;
         switch (instr.src) {
-            case 'pins': val = this.pins; break;
+            case 'pins': {
+                val = 0;
+                for (let i = 0; i < 32; i++) {
+                    const pin = (this.inBase + i) & 0x1F;
+                    if (this.getPinState(pin)) {
+                        val |= (1 << i);
+                    }
+                }
+                val = val >>> 0;
+                break;
+            }
             case 'x': val = this.x; break;
             case 'y': val = this.y; break;
             case 'null': val = 0; break;
@@ -549,6 +564,11 @@ class PioEmulator {
             }
             case 'isr': val = this.isr; break;
             case 'osr': val = this.osr; break;
+            case 'rxfifo[y]': {
+                const idx = this.y & 3;
+                val = this.rxFifo[idx] || 0;
+                break;
+            }
         }
 
         if (instr.op === 'invert' || instr.op === '~' || instr.op === '!') {
@@ -560,13 +580,30 @@ class PioEmulator {
         val = val >>> 0;
 
         switch (instr.dest) {
-            case 'pins': this.pins = val; break;
+            case 'pins': {
+                for (let i = 0; i < 32; i++) {
+                    const pin = (this.outBase + i) % 32;
+                    const bit = (val >> i) & 1;
+                    if (bit) {
+                        this.pins |= (1 << pin);
+                    } else {
+                        this.pins &= ~(1 << pin);
+                    }
+                }
+                this.pins = this.pins >>> 0;
+                break;
+            }
             case 'x': this.x = val; break;
             case 'y': this.y = val; break;
             case 'exec': break; // TODO: not implemented
             case 'pc': this.pcOverride = val; break;
             case 'isr': this.isr = val; this.isrCount = 0; break;
             case 'osr': this.osr = val; this.osrCount = 0; break;
+            case 'rxfifo[y]': {
+                const idx = this.y & 3;
+                this.rxFifo[idx] = val;
+                break;
+            }
         }
     }
     
@@ -579,10 +616,12 @@ class PioEmulator {
     }
 
     executeIrq(instr) {
-        const index = instr.index & 7;
+        let index = instr.index & 7;
 
         if (instr.clear) {
-            this.irq &= ~(1 << index);
+            if (instr.prev) this.irqPrev &= ~(1 << index);
+            else if (instr.next) this.irqNext &= ~(1 << index);
+            else this.irq &= ~(1 << index);
             this.irqWaitStalled = false;
             this.irqWaitPc = -1;
             return true;
@@ -594,11 +633,18 @@ class PioEmulator {
         // re-executes the IRQ op every cycle, so re-asserting would defeat any
         // external clear that is meant to unstick this wait.
         if (!continuingSameWait) {
-            this.irq |= (1 << index);
+            if (instr.prev) this.irqPrev |= (1 << index);
+            else if (instr.next) this.irqNext |= (1 << index);
+            else this.irq |= (1 << index);
         }
 
         if (instr.wait) {
-            if ((this.irq >> index) & 1) {
+            let irqVal = 0;
+            if (instr.prev) irqVal = (this.irqPrev >> index) & 1;
+            else if (instr.next) irqVal = (this.irqNext >> index) & 1;
+            else irqVal = (this.irq >> index) & 1;
+            
+            if (irqVal) {
                 this.irqWaitStalled = true;
                 this.irqWaitPc = this.pc;
                 return false;
@@ -610,7 +656,7 @@ class PioEmulator {
     }
 
     executeSet(instr) {
-        const val = instr.value;
+        const val = instr.value & 0x1F;
         switch (instr.dest) {
             case 'pins':
                 for (let i = 0; i < this.setCount; i++) {
