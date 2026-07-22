@@ -490,7 +490,7 @@ class PioEmulator {
             return true;
         }
 
-        if (instr.ifull && this.isrCount < this.effPushThresh()) {
+        if (instr.iffull && this.isrCount < this.effPushThresh()) {
             return true;
         }
 

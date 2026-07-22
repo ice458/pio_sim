@@ -276,9 +276,9 @@ class PioAssembler {
 
     parsePush(args) {
         // syntax: push [iffull] [block|noblock]
-        const ifull = args.includes('ifull');
+        const iffull = args.includes('iffull') || args.includes('ifull');
         const block = !args.includes('noblock');
-        return { type: 'PUSH', ifull, block };
+        return { type: 'PUSH', iffull, block };
     }
 
     parsePull(args) {
