@@ -45,7 +45,11 @@ class PioAssembler {
             if (line === '') continue;
 
             if (line.startsWith('.')) {
-                this.handleDirective(line, pc);
+                try {
+                    this.handleDirective(line, pc);
+                } catch (e) {
+                    throw new Error(`Line ${i + 1}: ${e.message}`);
+                }
             } else {
                 pc++;
             }
@@ -121,6 +125,14 @@ class PioAssembler {
                 this.sidesetCount = parseInt(parts[1]);
                 if (parts.includes('opt')) this.sidesetOpt = true;
                 if (parts.includes('pindirs')) this.sidesetPindirs = true;
+                // The Delay/side-set field is 5 bits. `count` data bits plus an
+                // extra enable bit when `opt` is present must fit within it.
+                if (isNaN(this.sidesetCount) || this.sidesetCount < 0 || this.sidesetCount > 5) {
+                    throw new Error(`.side_set count must be 0-5`);
+                }
+                if (this.sidesetCount + (this.sidesetOpt ? 1 : 0) > 5) {
+                    throw new Error(`.side_set ${this.sidesetCount} opt needs ${this.sidesetCount + 1} bits, exceeds the 5-bit field`);
+                }
                 break;
             case '.define':
                 // .define name value  — defines a named constant
@@ -206,9 +218,37 @@ class PioAssembler {
             default: throw new Error(`Unknown instruction: ${op}`);
         }
         
+        this.validateSideDelay(sideSetVal, delay);
+
         instr.sideSet = sideSetVal;
         instr.delay = delay;
         return instr;
+    }
+
+    // Check side-set value and delay against the .side_set configuration.
+    // The 5-bit Delay/side-set field is split into `sidesetCount` data bits
+    // (+1 enable bit when opt), leaving the rest for delay. See RP2350
+    // datasheet §11.4.1 / §11.5.1 and the .side_set directive (pioasm_side_set).
+    validateSideDelay(sideSetVal, delay) {
+        const sideTotalBits = this.sidesetCount + (this.sidesetOpt ? 1 : 0);
+        const delayBits = 5 - sideTotalBits;
+
+        if (sideSetVal !== null) {
+            if (this.sidesetCount === 0) {
+                throw new Error(`'side' used but no side-set bits declared (add .side_set)`);
+            }
+            const maxSide = (1 << this.sidesetCount) - 1;
+            if (sideSetVal < 0 || sideSetVal > maxSide) {
+                throw new Error(`side-set value ${sideSetVal} out of range 0-${maxSide} for .side_set ${this.sidesetCount}`);
+            }
+        } else if (this.sidesetCount > 0 && !this.sidesetOpt) {
+            throw new Error(`missing 'side' value (.side_set ${this.sidesetCount} is not optional, so every instruction needs one)`);
+        }
+
+        const maxDelay = (1 << delayBits) - 1;
+        if (delay < 0 || delay > maxDelay) {
+            throw new Error(`delay [${delay}] out of range 0-${maxDelay} (${delayBits} delay bits remain with side-set using ${sideTotalBits})`);
+        }
     }
 
     parseJmp(args, pc) {

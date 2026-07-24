@@ -477,19 +477,18 @@ class PioEmulator {
                 break;
             }
             case 'exec':
-                // TODO: not implemented
-                break;
+                // Executing OSR contents as an instruction needs a 16-bit
+                // decoder this object-based emulator doesn't have. Fail loudly
+                // rather than silently no-op.
+                throw new Error('OUT EXEC is not supported by this simulator');
         }
         return true;
     }
 
     executePush(instr) {
-        // With autopush enabled, an explicit PUSH below threshold is a no-op
-        // — autopush would have already pushed if the threshold were reached.
-        if (this.autoPush && this.isrCount < this.effPushThresh()) {
-            return true;
-        }
-
+        // A plain PUSH is unconditional even when autopush is enabled: autopush
+        // does not add fence/no-op behavior to PUSH (unlike autopull→PULL). See
+        // RP2350 datasheet §11.5.4.2. Only IfFull gates PUSH on the threshold.
         if (instr.iffull && this.isrCount < this.effPushThresh()) {
             return true;
         }
@@ -595,7 +594,7 @@ class PioEmulator {
             }
             case 'x': this.x = val; break;
             case 'y': this.y = val; break;
-            case 'exec': break; // TODO: not implemented
+            case 'exec': throw new Error('MOV EXEC is not supported by this simulator');
             case 'pc': this.pcOverride = val; break;
             case 'isr': this.isr = val; this.isrCount = 0; break;
             case 'osr': this.osr = val; this.osrCount = 0; break;
