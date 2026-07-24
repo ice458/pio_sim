@@ -94,6 +94,16 @@ class PioEmulator {
         return (this.pins & this.pindirs) | (this.inputs & ~this.pindirs);
     }
 
+    // Non-OUT-cycle autopull: refill the OSR from the TX FIFO once the output
+    // shift count reaches the pull threshold, if data is available. Never
+    // stalls — a stall for autopull only happens on an OUT (datasheet §11.5.4.2).
+    backgroundAutopull() {
+        if (this.autoPull && this.osrCount >= this.effPullThresh() && this.txFifo.length > 0) {
+            this.osr = this.txFifo.shift();
+            this.osrCount = 0;
+        }
+    }
+
     pushTx(value) {
         if (this.txFifo.length < 4) {
             this.txFifo.push(value >>> 0);
@@ -140,35 +150,10 @@ class PioEmulator {
         this.inputsFf2 = this.inputsFf1 >>> 0;
         this.inputsFf1 = this.inputs >>> 0;
 
-        // Autopush/Autopull are evaluated before the instruction starts.
-        // If a FIFO is full/empty respectively, the machine stalls on this cycle.
-        let stalled = false;
-        if (this.autoPush && this.isrCount >= this.effPushThresh()) {
-            if (this.rxFifo.length < 4) {
-                this.rxFifo.push(this.isr);
-                this.isr = 0;
-                this.isrCount = 0;
-            } else {
-                stalled = true;
-            }
-        }
-
-        if (this.autoPull && this.osrCount >= this.effPullThresh()) {
-            if (this.txFifo.length > 0) {
-                this.osr = this.txFifo.shift();
-                this.osrCount = 0;
-            } else {
-                stalled = true;
-            }
-        }
-
-        if (stalled) {
-            this.status = 'stalled';
-            this.clock++;
-            return;
-        }
-
+        // Delay cycles are idle. Autopull can still refill the OSR in the
+        // background on these non-OUT cycles, but never stalls here.
         if (this.delay > 0) {
+            this.backgroundAutopull();
             this.delay--;
             this.clock++;
             return;
@@ -183,6 +168,17 @@ class PioEmulator {
             this.error = `Instruction at PC ${this.pc} is undefined.`;
             this.status = 'error';
             return;
+        }
+
+        // Autopush and autopull happen as part of the IN/OUT that triggers them,
+        // in the same cycle (datasheet §11.5.4). On any other cycle, autopull
+        // may still refill the OSR asynchronously once the shift count reaches
+        // the threshold — but only a refill, never a stall. OUT cycles are
+        // skipped here because executeOut applies the full OUT-cycle autopull,
+        // including the mandatory one-cycle refill stall. Autopush is never a
+        // background action; it only occurs inside an IN (see executeIn).
+        if (instr.type !== 'OUT') {
+            this.backgroundAutopull();
         }
 
         let sideSetVal = instr.sideSet;
@@ -408,12 +404,41 @@ class PioEmulator {
         let newIsrCount = this.isrCount + bitCount;
         if (newIsrCount > 32) newIsrCount = 32;
 
+        // Autopush (datasheet §11.5.4.1) is part of the IN, in the same cycle:
+        // once the shift reaches the push threshold, the ISR is written to the
+        // RX FIFO and cleared. If the RX FIFO is full, the IN itself stalls and
+        // the PC holds. Decide this before committing the shift so the IN
+        // re-executes cleanly next cycle rather than double-shifting.
+        const willPush = this.autoPush && newIsrCount >= this.effPushThresh();
+        if (willPush && this.rxFifo.length >= 4) {
+            return false;
+        }
+
         this.isr = newIsr;
         this.isrCount = newIsrCount;
+
+        if (willPush) {
+            this.rxFifo.push(this.isr);
+            this.isr = 0;
+            this.isrCount = 0;
+        }
         return true;
     }
 
     executeOut(instr) {
+        // OUT-cycle autopull (datasheet §11.5.4.2). If the OSR is already empty
+        // (shift count at/over the pull threshold), the hardware cannot refill
+        // and OUT on the same cycle: refill from the TX FIFO if data is
+        // available, but stall this cycle regardless so the refilled word is
+        // shifted out on the following cycle.
+        if (this.autoPull && this.osrCount >= this.effPullThresh()) {
+            if (this.txFifo.length > 0) {
+                this.osr = this.txFifo.shift();
+                this.osrCount = 0;
+            }
+            return false;
+        }
+
         const bitCount = instr.bitCount;
         const mask = bitCount === 32 ? 0xFFFFFFFF : (1 << bitCount) - 1;
 
@@ -438,6 +463,17 @@ class PioEmulator {
 
         this.osrCount += bitCount;
         if (this.osrCount > 32) this.osrCount = 32;
+
+        // After shifting out the last of the data, the OSR can be refilled in
+        // the same cycle (datasheet §11.5.4.2 — these operations run in
+        // parallel, so this refill does NOT stall). If the TX FIFO is empty, the
+        // shift count stays at/over threshold and the next OUT takes the stall
+        // branch above. Done before the dest write so OUT PC (which returns
+        // early) is still covered.
+        if (this.autoPull && this.osrCount >= this.effPullThresh() && this.txFifo.length > 0) {
+            this.osr = this.txFifo.shift();
+            this.osrCount = 0;
+        }
 
         switch (instr.dest) {
             case 'pins':
