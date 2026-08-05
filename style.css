@@ -25,12 +25,17 @@ header {
 
 .editor-section {
     flex: 1;
+    /* Without this the default min-width:auto floors the item at its
+       min-content width, which the non-wrapping program display makes as
+       wide as the longest source line. */
+    min-width: 0;
     display: flex;
     flex-direction: column;
 }
 
 .status-section {
     flex: 1.4;
+    min-width: 0;
     background-color: #fff;
     padding: 20px;
     border-radius: 8px;
@@ -323,6 +328,7 @@ button:disabled {
     font-family: 'Consolas', 'Monaco', monospace;
     font-size: 14px;
     max-height: 300px;
+    overflow-x: auto;
     overflow-y: auto;
     display: none;
 }
