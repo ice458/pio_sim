@@ -35,7 +35,10 @@ class PioAssembler {
             }
             if (line === '') continue;
 
-            const colonIndex = line.indexOf(':');
+            let colonIndex = line.indexOf(':');
+            while (colonIndex !== -1 && colonIndex + 1 < line.length && line[colonIndex + 1] === ':') {
+                colonIndex = line.indexOf(':', colonIndex + 2);
+            }
             if (colonIndex !== -1) {
                 const labelName = line.substring(0, colonIndex).trim();
                 this.labels[labelName] = pc;
@@ -70,7 +73,10 @@ class PioAssembler {
             }
             if (line === '') continue;
 
-            const colonIndex = line.indexOf(':');
+            let colonIndex = line.indexOf(':');
+            while (colonIndex !== -1 && colonIndex + 1 < line.length && line[colonIndex + 1] === ':') {
+                colonIndex = line.indexOf(':', colonIndex + 2);
+            }
             if (colonIndex !== -1) {
                 line = line.substring(colonIndex + 1).trim();
             }
