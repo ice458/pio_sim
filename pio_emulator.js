@@ -284,7 +284,7 @@ class PioEmulator {
                 // Per datasheet, wrap does not apply to JMP targets.
                 this.pc = nextPc;
             } else {
-                if (nextPc > this.wrap) {
+                if (this.pc == this.wrap) {
                     nextPc = this.wrapTarget;
                 }
                 this.pc = nextPc;
