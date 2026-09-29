@@ -225,11 +225,11 @@ class PioEmulator {
         try {
             switch (instr.type) {
                 case 'JMP': {
-                    const jmpTarget = this.executeJmp(instr, nextPc);
-                    if (jmpTarget !== nextPc) {
+                    // A taken JMP bypasses wrap even when its target is PC+1.
+                    if (this.executeJmp(instr)) {
                         jumped = true;
+                        nextPc = instr.target;
                     }
-                    nextPc = jmpTarget;
                     break;
                 }
                 case 'WAIT':
@@ -284,7 +284,7 @@ class PioEmulator {
                 // Per datasheet, wrap does not apply to JMP targets.
                 this.pc = nextPc;
             } else {
-                if (this.pc == this.wrap) {
+                if (this.pc === this.wrap) {
                     nextPc = this.wrapTarget;
                 }
                 this.pc = nextPc;
@@ -296,7 +296,7 @@ class PioEmulator {
         this.clock++;
     }
 
-    executeJmp(instr, nextPc) {
+    executeJmp(instr) {
         let conditionMet = false;
         switch (instr.cond) {
             case '': conditionMet = true; break;
@@ -315,10 +315,7 @@ class PioEmulator {
             case '!osre': conditionMet = (this.osrCount < this.effPullThresh()); break; // OSR not empty
         }
 
-        if (conditionMet) {
-            return instr.target;
-        }
-        return nextPc;
+        return conditionMet;
     }
 
     executeWait(instr) {
