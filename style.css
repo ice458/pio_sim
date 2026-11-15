@@ -227,6 +227,23 @@ button:disabled {
     pointer-events: none;
 }
 
+.gpio-bit.stim::before {
+    content: 'W';
+    position: absolute;
+    top: 1px;
+    left: 1px;
+    width: 8px;
+    height: 8px;
+    line-height: 8px;
+    text-align: center;
+    font-size: 7px;
+    font-weight: bold;
+    background-color: #ef6c00;
+    color: #fff;
+    border-radius: 50%;
+    pointer-events: none;
+}
+
 .sync-ff-row {
     font-size: 0.85em;
     color: #c2185b;
@@ -255,6 +272,20 @@ button:disabled {
     font-size: 9px;
     font-weight: bold;
     background-color: #c2185b;
+    color: #fff;
+    border-radius: 50%;
+    vertical-align: middle;
+}
+
+.legend-stim-sample {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    line-height: 12px;
+    text-align: center;
+    font-size: 9px;
+    font-weight: bold;
+    background-color: #ef6c00;
     color: #fff;
     border-radius: 50%;
     vertical-align: middle;

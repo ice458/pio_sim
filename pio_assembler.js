@@ -22,13 +22,28 @@ class PioAssembler {
         this.sidesetCount = 0;
         this.sidesetOpt = false;
         this.sidesetPindirs = false;
-        
+        this.programCount = 0;
+        this.stimuli = [];
+
         const lines = sourceCode.split('\n');
         let pc = 0;
 
         // First pass: collect labels and directives
         for (let i = 0; i < lines.length; i++) {
             let line = lines[i].trim();
+
+            // Simulator-only pragma, written as a comment so that pioasm
+            // ignores it:  ; #pragma pio_sim pin 5 hi 3 low 7
+            const pragma = line.match(/^;\s*#pragma\s+pio_sim\b([^;]*)/i);
+            if (pragma) {
+                try {
+                    this.handlePragma(pragma[1]);
+                } catch (e) {
+                    throw new Error(`Line ${i + 1}: ${e.message}`);
+                }
+                continue;
+            }
+
             const commentIndex = line.indexOf(';');
             if (commentIndex !== -1) {
                 line = line.substring(0, commentIndex).trim();
@@ -108,8 +123,89 @@ class PioAssembler {
             sidesetCount: this.sidesetCount,
             sidesetOpt: this.sidesetOpt,
             sidesetPindirs: this.sidesetPindirs,
+            stimuli: this.stimuli,
             programMap: programMap
         };
+    }
+
+    // Parse the body of a `; #pragma pio_sim ...` comment.
+    //
+    //   pin <n> [<level> delay <clocks>] <level> <clocks> ... [count <n>]
+    //
+    // Drives an input pin with a waveform counted in PIO clocks from reset.
+    // `<level>` is hi/high or low/lo. The `<level> <clocks>` segments form one
+    // period, repeated forever or `count` times; after that the pin holds the
+    // last level. An optional leading `<level> delay <clocks>` holds a level
+    // once before the first period.
+    handlePragma(body) {
+        const tokens = body.trim().split(/\s+/).filter(t => t !== '');
+        const usage = `expected '; #pragma pio_sim pin <n> [<hi|low> delay <clocks>] <hi|low> <clocks> ... [count <n>]'`;
+        const levels = { hi: 1, high: 1, low: 0, lo: 0 };
+
+        const num = (tok, what) => {
+            if (tok !== undefined && Object.prototype.hasOwnProperty.call(this.defines, tok)) {
+                return this.defines[tok];
+            }
+            if (tok === undefined || !/^(0x[0-9a-f]+|\d+)$/i.test(tok)) {
+                throw new Error(`#pragma pio_sim: ${what} must be a non-negative integer, got '${tok === undefined ? '' : tok}' (${usage})`);
+            }
+            return parseInt(tok);
+        };
+
+        if (tokens.length === 0 || tokens[0].toLowerCase() !== 'pin') {
+            throw new Error(`#pragma pio_sim: unknown pragma '${tokens[0] || ''}' (${usage})`);
+        }
+
+        const pin = num(tokens[1], 'pin number');
+        if (pin > 31) throw new Error(`#pragma pio_sim: pin ${pin} out of range 0-31`);
+        if (this.stimuli.some(s => s.pin === pin)) {
+            throw new Error(`#pragma pio_sim: pin ${pin} already has a stimulus`);
+        }
+
+        const stim = { pin, delay: 0, delayLevel: 0, segments: [], period: 0, count: null };
+        let i = 2;
+        while (i < tokens.length) {
+            const tok = tokens[i].toLowerCase();
+
+            if (tok === 'count') {
+                if (stim.segments.length === 0) {
+                    throw new Error(`#pragma pio_sim: 'count' needs a waveform before it (${usage})`);
+                }
+                stim.count = num(tokens[i + 1], 'count');
+                if (stim.count < 1) throw new Error(`#pragma pio_sim: count must be at least 1`);
+                if (i + 2 !== tokens.length) {
+                    throw new Error(`#pragma pio_sim: 'count <n>' must come last (${usage})`);
+                }
+                break;
+            }
+
+            if (!Object.prototype.hasOwnProperty.call(levels, tok)) {
+                throw new Error(`#pragma pio_sim: expected hi or low, got '${tokens[i]}' (${usage})`);
+            }
+            const level = levels[tok];
+
+            if ((tokens[i + 1] || '').toLowerCase() === 'delay') {
+                if (i !== 2) {
+                    throw new Error(`#pragma pio_sim: '<level> delay <clocks>' is only allowed right after the pin number`);
+                }
+                stim.delayLevel = level;
+                stim.delay = num(tokens[i + 2], 'delay');
+                i += 3;
+            } else {
+                const clocks = num(tokens[i + 1], `clock count after '${tokens[i]}'`);
+                if (clocks < 1) {
+                    throw new Error(`#pragma pio_sim: clock count after '${tokens[i]}' must be at least 1`);
+                }
+                stim.segments.push({ level, clocks });
+                stim.period += clocks;
+                i += 2;
+            }
+        }
+
+        if (stim.segments.length === 0) {
+            throw new Error(`#pragma pio_sim: pin ${pin} has no waveform (${usage})`);
+        }
+        this.stimuli.push(stim);
     }
 
     handleDirective(line, pc) {
@@ -118,6 +214,13 @@ class PioAssembler {
 
         switch (directive) {
             case '.program':
+                // One source is one state machine. Without this check a second
+                // .program would silently be appended to the first, and the
+                // wrap points of the last program would apply to the whole lot.
+                this.programCount++;
+                if (this.programCount > 1) {
+                    throw new Error(`multiple .program blocks are not supported ('${this.programName}', then '${parts[1] || ''}'). This simulator runs a single state machine, so keep one .program per source.`);
+                }
                 this.programName = parts[1];
                 break;
             case '.wrap_target':

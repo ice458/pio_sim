@@ -7,6 +7,8 @@ class PioEmulator {
         // behavior). Hardware default is 0 (engaged); we preserve simulator UX
         // and let the user opt into the 2-cycle delay per pin.
         this.inputSyncBypass = 0xFFFFFFFF;
+        // Input waveforms from `; #pragma pio_sim pin ...` (owned by loadProgram).
+        this.stimuli = [];
         this.reset();
     }
 
@@ -59,6 +61,42 @@ class PioEmulator {
         this.irqWaitPc = -1;
         this.status = 'stopped';
         this.error = null;
+
+        this.applyStimuli();
+    }
+
+    // Level a stimulus drives on its pin during PIO clock `clock`.
+    stimulusLevel(stim, clock) {
+        if (clock < stim.delay) return stim.delayLevel;
+        let t = clock - stim.delay;
+        if (stim.count !== null && t >= stim.period * stim.count) {
+            return stim.segments[stim.segments.length - 1].level;
+        }
+        t %= stim.period;
+        for (const seg of stim.segments) {
+            if (t < seg.clocks) return seg.level;
+            t -= seg.clocks;
+        }
+        return 0;
+    }
+
+    // Drive the stimulated input pins with their level for the current clock.
+    applyStimuli() {
+        for (const stim of this.stimuli) {
+            if (this.stimulusLevel(stim, this.clock)) {
+                this.inputs |= (1 << stim.pin);
+            } else {
+                this.inputs &= ~(1 << stim.pin);
+            }
+        }
+        this.inputs = this.inputs >>> 0;
+    }
+
+    // Bit mask of the pins driven by a stimulus.
+    stimulusMask() {
+        let mask = 0;
+        for (const stim of this.stimuli) mask |= (1 << stim.pin);
+        return mask >>> 0;
     }
 
     loadProgram(programData) {
@@ -73,6 +111,7 @@ class PioEmulator {
         if (programData.setCount !== undefined) {
             this.setCount = programData.setCount;
         }
+        this.stimuli = programData.stimuli || [];
         this.reset();
     }
 
@@ -133,9 +172,13 @@ class PioEmulator {
 
         if (this.instructions.length === 0) return;
 
+        // A stimulus owns its pin: re-apply so a manual toggle cannot linger.
+        this.applyStimuli();
+
         this.history.push({
             clock: this.clock,
             pins: this.pins,
+            inputs: this.inputs,
             pc: this.pc,
             x: this.x,
             y: this.y,
@@ -156,6 +199,7 @@ class PioEmulator {
             this.backgroundAutopull();
             this.delay--;
             this.clock++;
+            this.applyStimuli();
             return;
         }
 
@@ -294,6 +338,8 @@ class PioEmulator {
         }
 
         this.clock++;
+        // Show the level the next cycle will see.
+        this.applyStimuli();
     }
 
     executeJmp(instr) {

@@ -93,6 +93,8 @@ for (let i = 31; i >= 0; i--) {
             emulator.pindirs ^= (1 << i);
         } else {
             emulator.inputs ^= (1 << i);
+            // Pins driven by a `#pragma pio_sim` stimulus keep their waveform.
+            emulator.applyStimuli();
         }
         updateUI();
     });
@@ -251,6 +253,33 @@ is_high:
         config: {
             outBase: 0, setBase: 0, sidesetBase: 4, inBase: 0, jmpPin: 5,
             inShiftDir: 'left', outShiftDir: 'right',
+            autoPush: false, pushThresh: 32, autoPull: false, pullThresh: 32
+        }
+    },
+    stimulus: {
+        code: `.program stimulus
+
+; Input waveforms for the simulator (plain comments for pioasm).
+; pin <n> [<hi|low> delay <clocks>] <hi|low> <clocks> ... [count <n>]
+;
+; GPIO 5: low 7 clocks, high 3, repeating forever
+; #pragma pio_sim pin 5 low 7 hi 3
+; GPIO 4: low for 12 clocks, then 3 pulses
+; #pragma pio_sim pin 4 low delay 12 hi 1 low 9 count 3
+
+; Config:
+; SET Base: 0
+; IN Base: 0
+
+.wrap_target
+    wait 1 pin 5    ; Wait for GPIO 5 High
+    set pins, 1     ; Copy it to GPIO 0
+    wait 0 pin 5    ; Wait for GPIO 5 Low
+    set pins, 0
+.wrap`,
+        config: {
+            outBase: 0, setBase: 0, sidesetBase: 0, inBase: 0, jmpPin: 0,
+            inShiftDir: 'right', outShiftDir: 'right',
             autoPush: false, pushThresh: 32, autoPull: false, pullThresh: 32
         }
     }
@@ -565,17 +594,22 @@ function updateUI(isStep = false) {
     gpioFf1Row.style.display = ffVisible;
     gpioFf2Row.style.display = ffVisible;
 
+    const stimMask = emulator.stimulusMask();
+
     for (let i = 0; i < 32; i++) {
         const bit = document.getElementById(`gpio-bit-${i}`);
         const isOut = (emulator.pindirs >> i) & 1;
         const val = (allPins >> i) & 1;
         const bypass = (bypassMask >> i) & 1;
+        const stim = (stimMask >> i) & 1;
 
         bit.className = 'gpio-bit';
         if (!isOut) bit.classList.add('input');
         if (val) bit.classList.add('on');
         // Mark inputs whose synchronizer is engaged (hardware default).
         if (!isOut && !bypass) bit.classList.add('synced');
+        // Mark pins driven by a `#pragma pio_sim` waveform.
+        if (stim) bit.classList.add('stim');
 
         const ff2Bit = (ff2 >> i) & 1;
         const syncNote = isOut
@@ -583,7 +617,10 @@ function updateUI(isStep = false) {
             : (bypass
                 ? ' [SYNC BYPASSED]'
                 : ` [SYNC ENGAGED — PIO sees ${ff2Bit}]`);
-        bit.title = `GPIO ${i}: ${isOut ? 'Output' : 'Input'} = ${val}${syncNote}`;
+        const stimNote = stim
+            ? (isOut ? ' [STIMULUS — ignored while Output]' : ' [STIMULUS]')
+            : '';
+        bit.title = `GPIO ${i}: ${isOut ? 'Output' : 'Input'} = ${val}${syncNote}${stimNote}`;
     }
 
     for (let i = 0; i < 8; i++) {
@@ -631,7 +668,15 @@ function drawTimingChart() {
         for (let i = 0; i < 4; i++) {
             pinsToShow.push(outBase + i);
         }
+        for (const stim of emulator.stimuli) {
+            pinsToShow.push(stim.pin);
+        }
     }
+
+    // Stimulus pins are plotted from the driven input waveform, not the
+    // output latch.
+    const stimMask = emulator.stimulusMask();
+    const isStimPin = pin => ((stimMask >> pin) & 1) === 1;
 
     pinsToShow.sort((a, b) => a - b);
     pinsToShow = [...new Set(pinsToShow)];
@@ -708,22 +753,23 @@ function drawTimingChart() {
         ctx.stroke();
     }
 
-    ctx.strokeStyle = '#007acc';
     ctx.lineWidth = 2;
 
     for (let i = 0; i < numPins; i++) {
         const pin = pinsToShow[i];
+        const key = isStimPin(pin) ? 'inputs' : 'pins';
         const yCenter = i * pinRowHeight + pinRowHeight / 2;
+        ctx.strokeStyle = isStimPin(pin) ? '#ef6c00' : '#007acc';
         ctx.beginPath();
         for (let t = 0; t < visibleHistory.length; t++) {
-            const state = (visibleHistory[t].pins >> pin) & 1;
+            const state = (visibleHistory[t][key] >> pin) & 1;
             const x = t * stepX;
             const y = state ? yCenter - 10 : yCenter + 10;
 
             if (t === 0) {
                 ctx.moveTo(x, y);
             } else {
-                const prevState = (visibleHistory[t - 1].pins >> pin) & 1;
+                const prevState = (visibleHistory[t - 1][key] >> pin) & 1;
                 const prevY = prevState ? yCenter - 10 : yCenter + 10;
                 ctx.lineTo(x, prevY);
                 ctx.lineTo(x, y);
@@ -735,7 +781,7 @@ function drawTimingChart() {
 
     ctx.font = '12px Consolas';
     for (let i = 0; i < numPins; i++) {
-        const label = `GPIO ${pinsToShow[i]}`;
+        const label = `GPIO ${pinsToShow[i]}${isStimPin(pinsToShow[i]) ? ' (stim)' : ''}`;
         const yBaseline = i * pinRowHeight + 15;
         const tw = ctx.measureText(label).width;
         ctx.fillStyle = '#fff';
