@@ -5,3 +5,6 @@ RP-008373-DS-2-rp2350-datasheet.md
 
 # Local regression tests (see tests/README.md)
 tests/
+
+# Local helper (datasheet PDF to Markdown), not part of the simulator
+pdf2md.py
