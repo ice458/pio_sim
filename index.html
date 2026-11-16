@@ -397,10 +397,6 @@
                     <span class="clock-display">Clock: <span id="reg-clock">0</span><span id="reg-sysclk"></span></span></h2>
                 <div class="multi-sm-only">
                     <table class="sm-summary" id="sm-summary">
-                        <colgroup>
-                            <col style="width: 42px;"><col style="width: 15%;"><col style="width: 82px;"><col style="width: 38px;">
-                            <col><col style="width: 94px;"><col style="width: 94px;"><col style="width: 72px;">
-                        </colgroup>
                         <thead>
                             <tr><th>SM</th><th>Program</th><th>Status</th><th>PC</th><th>Instruction</th><th>X</th><th>Y</th><th>Cycles</th></tr>
                         </thead>
@@ -430,8 +426,8 @@
                         <h4>TX FIFO <span class="fifo-dir">system &rarr; state machine</span></h4>
                         <div class="fifo-end system">
                             <span class="side-tag">System</span>
-                            <input type="text" id="tx-input" placeholder="e.g. 0xFF, 255, 0b1010, FF"
-                                title="A word for the TX FIFO, as pio_sm_put() writes it">
+                            <input type="text" id="tx-input" placeholder="e.g. 0xFF, 255"
+                                title="A word for the TX FIFO, as pio_sm_put() writes it: 0xFF, 255, 0b1010 or FF">
                             <button id="btn-put-tx" title="Write the word to the TX FIFO, as pio_sm_put() does">Put</button>
                             <span id="tx-put-result"></span>
                         </div>

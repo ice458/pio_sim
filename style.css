@@ -36,6 +36,7 @@ header {
 .status-section {
     flex: 1.4;
     min-width: 0;
+    container: status / inline-size;
     background-color: #fff;
     padding: 20px;
     border-radius: 8px;
@@ -288,7 +289,12 @@ body.multi-sm .sm-scope {
 .controls {
     margin-top: 10px;
     display: flex;
+    flex-wrap: wrap;
     gap: 10px;
+}
+
+.controls button {
+    white-space: nowrap;
 }
 
 button {
@@ -332,14 +338,17 @@ button:disabled {
     border: 1px solid #ddd;
 }
 
+/* Side by side when there is room, one above the other when not. */
 .fifos {
     display: flex;
-    gap: 20px;
+    flex-wrap: wrap;
+    gap: 12px 20px;
     margin-bottom: 20px;
 }
 
 .fifo-box {
-    flex: 1;
+    flex: 1 1 280px;
+    min-width: 0;
     border: 1px solid #ddd;
     padding: 10px;
     border-radius: 4px;
@@ -395,6 +404,12 @@ button:disabled {
     margin-top: 6px;
 }
 
+/* Put's input, button and message wrap rather than widen the panel. */
+.fifo-end.system {
+    flex-wrap: wrap;
+    row-gap: 4px;
+}
+
 .side-tag {
     flex: none;
     width: 52px;
@@ -419,7 +434,7 @@ button:disabled {
 
 .fifo-end input[type="text"] {
     min-width: 0;
-    flex: 0 1 150px;
+    flex: 0 1 120px;
 }
 
 /* Put / Get results: one line, whatever the message. */
@@ -437,6 +452,13 @@ button:disabled {
 #tx-sm-side,
 #rx-sm-side {
     font-family: 'Consolas', monospace;
+}
+
+/* A message that does not fit beside the button goes to the next line
+   (flex: 1 alone would squeeze it to nothing instead). */
+#tx-put-result,
+#rx-get-result {
+    flex: 1 1 auto;
 }
 
 #timing-chart {
@@ -800,6 +822,27 @@ button:disabled {
     color: #555;
 }
 
+/* Column widths (table-layout: fixed takes them from the header row); the
+   instruction gets what is left. */
+.sm-summary th:nth-child(1) { width: 42px; }
+.sm-summary th:nth-child(2) { width: 15%; }
+.sm-summary th:nth-child(3) { width: 82px; }
+.sm-summary th:nth-child(4) { width: 38px; }
+.sm-summary th:nth-child(6),
+.sm-summary th:nth-child(7) { width: 94px; }
+.sm-summary th:nth-child(8) { width: 72px; }
+
+/* In a narrow State panel, leave X and Y to the details below so the
+   instruction keeps some room. */
+@container status (max-width: 760px) {
+    .sm-summary th:nth-child(6),
+    .sm-summary th:nth-child(7),
+    .sm-summary td:nth-child(6),
+    .sm-summary td:nth-child(7) {
+        display: none;
+    }
+}
+
 .sm-summary tbody tr {
     cursor: pointer;
 }
@@ -832,14 +875,22 @@ button:disabled {
 
 .sm-tabs-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 8px;
+    gap: 4px 8px;
     margin: 6px 0;
 }
 
-.sm-tabs-label {
+.sm-tabs-label,
+.sm-tabs-row .scope-note {
     font-size: 0.85em;
     color: #555;
+    white-space: nowrap;
+}
+
+.sm-tabs-row .scope-note {
+    font-size: 0.8em;
+    color: var(--sm-color, #555);
 }
 
 .sm-tabs {
@@ -937,4 +988,20 @@ button:disabled {
     border-radius: 3px;
     background-color: #eceff1;
     color: #455a64;
+}
+
+/* Narrow windows (half of a full HD screen at 125 % and below): the editor
+   above the State panel instead of beside it. */
+@media (max-width: 900px) {
+    .container {
+        padding: 12px;
+    }
+
+    .main-content {
+        flex-direction: column;
+    }
+
+    .code-view {
+        height: 340px;
+    }
 }
