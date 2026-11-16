@@ -788,9 +788,9 @@ class PioEmulator {
 
     // IRQ flag writes by state machines take effect at the end of the cycle,
     // so every state machine, the writer included, sees them on the next
-    // cycle (measured on RP2040 and RP2350). If one state machine sets a
-    // flag and another clears it on the same cycle, the set wins here; the
-    // hardware order is not documented.
+    // cycle. If one state machine sets a flag and another clears it on the
+    // same cycle, the set wins. The datasheet says neither; both were
+    // measured on RP2040 and RP2350.
     irqWrite(set, bit, value) {
         const p = this.irqPending[set];
         if (value) p.set |= bit;
