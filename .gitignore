@@ -1,4 +1,7 @@
 RP-008371-DS-1-rp2040-datasheet.pdf
-RP-008373-DS-2-rp2350-datasheet.md
+RP-008371-DS-1-rp2040-datasheet.md
 RP-008373-DS-2-rp2350-datasheet.pdf
-nRP-008371-DS-1-rp2040-datasheet.md
+RP-008373-DS-2-rp2350-datasheet.md
+
+# Local regression tests (see tests/README.md)
+tests/

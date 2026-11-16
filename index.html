@@ -142,32 +142,56 @@
                     A web-based emulator for the <strong>RP2040</strong> and <strong>RP2350</strong> Programmable I/O (<strong>PIO</strong>). Test and debug your PIO assembly code directly in the browser with real-time visualization of registers, FIFOs, GPIOs, and timing. 
                 </p>
                 <p>
-                    Fully client-side. Supports the standard <code>pioasm</code> syntax including side-set, delays, and RP2350 extensions.
+                    Fully client-side. The assembler follows <code>pioasm</code> (expressions, <code>.define</code>, side-set, delays, <code>.word</code>, RP2350 extensions) and the emulator follows the PIO chapters of the RP2040 and RP2350 datasheets. Settings start at the hardware reset values, so set them the way your C setup code would, or with <code>.in</code> / <code>.out</code> / <code>.set</code> / <code>.fifo</code> / <code>.mov_status</code> in the source.
                 </p>
             </details>
 
             <details style="font-size: 0.85em; color: #777; margin-top: 4px;">
                 <summary style="cursor: pointer;">Unsupported Features</summary>
                 <ul style="margin: 4px 0 0 1.2em; padding: 0;">
-                    <li><code>out exec</code> / <code>mov exec</code></li>
-                    <li>IRQ <code>rel</code> flag (Multi-SM addressing)</li>
-                    <li>Multiple <code>.program</code> blocks / multiple state machines (one state machine per source)</li>
+                    <li>Multiple <code>.program</code> blocks / multiple state machines (one state machine per source; it runs as SM0, so IRQ <code>rel</code> adds 0)</li>
+                    <li>Clock divider (<code>.clock_div</code> is accepted; one step is one state machine cycle)</li>
+                    <li><code>OUT_STICKY</code> / <code>INLINE_OUT_EN</code>, GPIOs above 31 (<code>GPIOBASE</code>), system-level interrupts and DMA</li>
+                    <li>Loading at a non-zero offset (<code>.origin</code> is accepted; the program is loaded at address 0)</li>
                 </ul>
             </details>
 
             <details style="font-size: 0.85em; color: #777; margin-top: 4px; line-height: 1.7;">
-                <summary style="cursor: pointer;">Input Stimulus (<code>#pragma pio_sim</code>)</summary>
+                <summary style="cursor: pointer;">Simulator pragmas (<code>#pragma pio_sim</code>): pin waveforms, IRQ events, settings</summary>
                 <p style="margin: 8px 0 0 0;">
-                    Drive an input pin with a waveform by adding a comment line to the source.
-                    <code>pioasm</code> ignores it, so it can stay in your real code.
+                    Comment lines starting with <code>; #pragma pio_sim</code> set up the simulation from the source.
+                    <code>pioasm</code> ignores them, so they can stay in your real code and are saved with it.
+                    Clocks are PIO clock cycles counted from reset. Numbers may be <code>.define</code> names.
                 </p>
-                <pre style="margin: 6px 0; padding: 6px 8px; background: #f5f5f5; overflow-x: auto;">; #pragma pio_sim pin 5 hi 3 low 7                 ; high 3 clocks, low 7, repeats forever
+                <p style="margin: 8px 0 0 0;"><strong>Pin waveform</strong>: drive an input pin.</p>
+                <pre style="margin: 4px 0; padding: 6px 8px; background: #f5f5f5; overflow-x: auto;">; #pragma pio_sim pin 5 hi 3 low 7                 ; high 3 clocks, low 7, repeats forever
 ; #pragma pio_sim pin 4 low 9 hi 1 count 5         ; repeats 5 times, then stays high
 ; #pragma pio_sim pin 3 hi delay 12 low 2 hi 2     ; holds high for 12 clocks first</pre>
                 <p style="margin: 0;">
-                    Syntax: <code>pin &lt;n&gt; [&lt;hi|low&gt; delay &lt;clocks&gt;] &lt;hi|low&gt; &lt;clocks&gt; ... [count &lt;n&gt;]</code>.
-                    Clocks are PIO clock cycles counted from reset. After <code>count</code> periods the pin holds its last level.
-                    See the "Input Stimulus" example.
+                    <code>pin &lt;n&gt; [&lt;hi|low&gt; delay &lt;clocks&gt;] &lt;hi|low&gt; &lt;clocks&gt; ... [count &lt;n&gt;]</code>.
+                    After <code>count</code> periods the pin holds its last level.
+                </p>
+                <p style="margin: 8px 0 0 0;"><strong>IRQ event</strong>: raise or clear an IRQ flag, as another state machine's <code>irq set</code> / <code>irq clear</code> would.</p>
+                <pre style="margin: 4px 0; padding: 6px 8px; background: #f5f5f5; overflow-x: auto;">; #pragma pio_sim irq set 5 delay 4 repeat 12      ; raised at clock 4, 16, 28, ...
+; #pragma pio_sim irq clear 5 delay 8 repeat 12    ; cleared at clock 8, 20, 32, ...
+; #pragma pio_sim irq set 0 delay 20               ; raised once, at clock 20</pre>
+                <p style="margin: 0;">
+                    <code>irq set|clear &lt;n&gt; [delay &lt;clocks&gt;] [repeat &lt;clocks&gt;] [count &lt;n&gt;]</code>.
+                    The instruction executed on that clock already sees the new value. The program can still set and clear the flag itself.
+                </p>
+                <p style="margin: 8px 0 0 0;"><strong>Settings</strong>: load the controls below on Assemble.</p>
+                <pre style="margin: 4px 0; padding: 6px 8px; background: #f5f5f5; overflow-x: auto;">; #pragma pio_sim config out_base 0 out_count 2 set_base 0 sideset_base 4
+; #pragma pio_sim config in_base 0 jmp_pin 5 autopull on pull_thresh 8</pre>
+                <p style="margin: 0;">
+                    <code>config &lt;name&gt; &lt;value&gt; ...</code> with names
+                    <code>out_base</code>, <code>out_count</code>, <code>set_base</code>, <code>set_count</code>, <code>sideset_base</code>,
+                    <code>in_base</code>, <code>in_count</code>, <code>jmp_pin</code>,
+                    <code>in_shift</code> / <code>out_shift</code> (<code>left</code>, <code>right</code>),
+                    <code>autopush</code> / <code>autopull</code> (<code>on</code>, <code>off</code>),
+                    <code>push_thresh</code>, <code>pull_thresh</code>,
+                    <code>status_sel</code> (<code>tx</code>, <code>rx</code>, <code>irq</code>), <code>status_n</code>,
+                    <code>fifo</code> (<code>txrx</code>, <code>tx</code>, <code>rx</code>, <code>txput</code>, <code>txget</code>, <code>putget</code>).
+                    Settings the source does not name keep whatever the controls show.
                 </p>
             </details>
         </header>
@@ -183,6 +207,7 @@
                         <option value="pwm">PWM (LED Fade)</option>
                         <option value="feature_test">Feature Test (Wait/Jmp Pin)</option>
                         <option value="stimulus">Input Stimulus (#pragma pio_sim)</option>
+                        <option value="irq_handshake">IRQ Handshake (#pragma pio_sim irq)</option>
                     </select>
                 </div>
                 <textarea id="code-editor" spellcheck="false">
@@ -221,13 +246,18 @@
                         <input type="number" id="cfg-out-base" value="0" min="0" max="31">
                     </div>
                     <div class="config-item">
+                        <label>OUT Count:</label>
+                        <input type="number" id="cfg-out-count" value="0" min="0" max="32"
+                            title="PINCTRL_OUT_COUNT: pins written by OUT PINS/PINDIRS and MOV PINS/PINDIRS (0-32). Resets to 0.">
+                    </div>
+                    <div class="config-item">
                         <label>SET Base:</label>
                         <input type="number" id="cfg-set-base" value="0" min="0" max="31">
                     </div>
                     <div class="config-item">
                         <label>SET Count:</label>
-                        <input type="number" id="cfg-set-count" value="5" min="1" max="5"
-                            title="Number of pins driven by SET (1-5)">
+                        <input type="number" id="cfg-set-count" value="5" min="0" max="5"
+                            title="PINCTRL_SET_COUNT: pins written by SET PINS/PINDIRS (0-5). Resets to 5.">
                     </div>
                     <div class="config-item">
                         <label>SIDESET Base:</label>
@@ -238,8 +268,17 @@
                         <input type="number" id="cfg-in-base" value="0" min="0" max="31">
                     </div>
                     <div class="config-item">
+                        <label>IN Count:</label>
+                        <input type="number" id="cfg-in-count" value="32" min="1" max="32"
+                            title="SHIFTCTRL_IN_COUNT (RP2350): IN-mapped pins above this count read as 0 for IN PINS, WAIT PIN and MOV x, PINS. 32 = no masking.">
+                    </div>
+                    <div class="config-item">
                         <label>JMP PIN:</label>
                         <input type="number" id="cfg-jmp-pin" value="0" min="0" max="31">
+                    </div>
+                    <div id="cfg-out-count-hint" class="config-hint" style="display: none;">
+                        OUT Count is 0 (the hardware reset value), so OUT and MOV to PINS / PINDIRS write no pins.
+                        Set OUT Count, or add <code>.out &lt;count&gt;</code> to the program.
                     </div>
                 </div>
                 <h3>Timing Chart Pins</h3>
@@ -286,10 +325,24 @@
                         <select id="cfg-status-sel">
                             <option value="0">TX FIFO level</option>
                             <option value="1">RX FIFO level</option>
+                            <option value="2">IRQ flag (RP2350)</option>
                         </select>
-                        <label style="margin-left: 6px;">&lt; N =</label>
-                        <input type="number" id="cfg-status-n" value="0" min="0" max="15" style="width: 40px;"
-                            title="All-ones when selected FIFO level is less than N (4-bit field)">
+                        <label style="margin-left: 6px;">N =</label>
+                        <input type="number" id="cfg-status-n" value="0" min="0" max="31" style="width: 40px;"
+                            title="STATUS_N. FIFO level: all-ones when the level is less than N. IRQ flag: all-ones when flag N is raised (add 8 for the previous PIO block, 16 for the next).">
+                    </div>
+                    <div style="width: 100%"></div>
+                    <div class="config-item">
+                        <label>FIFO:</label>
+                        <select id="cfg-fifo-mode"
+                            title="SHIFTCTRL_FJOIN_*. Changing it discards the FIFO contents.">
+                            <option value="txrx">TX 4 + RX 4</option>
+                            <option value="tx">TX 8 (no RX)</option>
+                            <option value="rx">RX 8 (no TX)</option>
+                            <option value="txput">TX 4 + put (RP2350)</option>
+                            <option value="txget">TX 4 + get (RP2350)</option>
+                            <option value="putget">put + get (RP2350)</option>
+                        </select>
                     </div>
                 </div>
             </div>
@@ -319,12 +372,24 @@
                         <ul id="tx-fifo-list"></ul>
                     </div>
                     <div class="fifo-box">
-                        <h4>RX FIFO</h4>
-                        <div class="rx-controls"
+                        <h4 id="rx-fifo-title">RX FIFO</h4>
+                        <div class="rx-controls" id="rx-pop-controls"
                             style="margin-bottom: 6px; display: flex; gap: 8px; align-items: center;">
                             <button id="btn-pop-rx">Pop</button>
                             <span id="rx-pop-result" style="font-size: 0.9em; color: #555;"></span>
                         </div>
+                        <div class="rx-controls" id="rx-reg-controls"
+                            style="margin-bottom: 6px; display: none; gap: 6px; align-items: center;">
+                            <select id="rx-reg-index" title="RXFx_PUTGETn register to write">
+                                <option value="0">[0]</option>
+                                <option value="1">[1]</option>
+                                <option value="2">[2]</option>
+                                <option value="3">[3]</option>
+                            </select>
+                            <input type="text" id="rx-reg-input" placeholder="e.g. 0xFF" style="width: 90px;">
+                            <button id="btn-write-rx-reg">Write</button>
+                        </div>
+                        <div id="rx-reg-note" style="font-size: 0.8em; color: #666; margin-bottom: 6px; display: none;"></div>
                         <ul id="rx-fifo-list"></ul>
                     </div>
                 </div>
@@ -337,13 +402,19 @@
                         FF1: <span id="gpio-ff1-hex-val">0x00000000</span>
                     </div>
                     <div class="hex-display sync-ff-row"
-                        title="Stage 2 — the value PIO reads when INPUT_SYNC_BYPASS=0 for that pin.">
+                        title="Stage 2 of the 2-FF input synchronizer.">
                         FF2: <span id="gpio-ff2-hex-val">0x00000000</span>
+                    </div>
+                    <div class="hex-display sync-seen-row"
+                        title="What the state machine reads on the next step: the pads one cycle earlier when the synchronizer is bypassed, three cycles earlier when it is engaged.">
+                        PIO sees: <span id="gpio-seen-hex-val">0x00000000</span>
                     </div>
                     <div style="font-size: 0.8em; color: #666; margin-bottom: 5px;">
                         Click: Toggle Input Value.<br>
                         Right-Click/Shift+Click: Toggle Direction (In/Out).<br>
-                        Alt+Click: Toggle INPUT_SYNC_BYPASS for this GPIO (2-cycle synchronizer).
+                        Alt+Click: Toggle INPUT_SYNC_BYPASS for this GPIO.<br>
+                        Inputs reach the state machine 1 cycle late when bypassed and 3 cycles late through the
+                        synchronizer, so it sees its own outputs 2 / 4 cycles later.
                         <br>
                         <span
                             style="border: 1px solid #4caf50; background: #4caf50; width: 10px; height: 10px; display: inline-block;"></span>
@@ -358,7 +429,7 @@
                             style="border: 1px dashed #2196f3; background: #2196f3; width: 10px; height: 10px; display: inline-block;"></span>
                         Input High
                         <span class="legend-synced-sample">S</span>
-                        Synchronizer engaged (hardware default; +2 cycle input latency)
+                        Synchronizer engaged (hardware default; 2 extra cycles of input latency)
                         <span class="legend-stim-sample">W</span>
                         Driven by a <code>#pragma pio_sim</code> waveform
                     </div>
@@ -366,10 +437,10 @@
                     <div class="sync-mode-row">
                         <span style="color: #555;">INPUT_SYNC_BYPASS:</span>
                         <button id="btn-bypass-all" type="button"
-                            title="Bypass synchronizer on all GPIOs (zero input latency — simulator default).">Bypass
+                            title="Bypass the synchronizer on all GPIOs (1 cycle of input latency).">Bypass
                             all</button>
                         <button id="btn-engage-sync-all" type="button"
-                            title="Engage 2-FF synchronizer on all GPIOs (hardware default — adds 2-cycle input latency).">Engage
+                            title="Engage the 2-FF synchronizer on all GPIOs (hardware default — 3 cycles of input latency).">Engage
                             all</button>
                     </div>
                 </div>

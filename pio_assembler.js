@@ -1,164 +1,1081 @@
+// PIO assembler for the simulator.
+//
+// Follows pioasm from the pico-sdk (tools/pioasm: lexer.ll, parser.yy,
+// pio_assembler.cpp): same tokens, grammar, operator precedence and range
+// checks, so a source that assembles here means the same thing on hardware.
+// Deliberate differences:
+//   - one .program per source (the simulator runs a single state machine)
+//   - instructions are accepted without a .program line
+//   - `; #pragma pio_sim ...` comment lines configure the simulator
+//   - `side` without a .side_set declaration is an error
+
+// Reserved words of the pioasm lexer. They cannot be used as symbol names.
+const PIO_KEYWORDS = new Set([
+    'jmp', 'wait', 'in', 'out', 'push', 'pull', 'mov', 'irq', 'set', 'nop',
+    'public', 'opt', 'side', 'pin', 'gpio', 'osre', 'pins', 'null', 'pindirs',
+    'x', 'y', 'pc', 'exec', 'isr', 'osr', 'status', 'block', 'noblock',
+    'iffull', 'ifempty', 'rel', 'clear', 'nowait', 'jmppin', 'next', 'prev',
+    'txrx', 'tx', 'rx', 'txput', 'txget', 'putget', 'rp2040', 'rp2350',
+    'rxfifo', 'txfifo', 'left', 'right', 'auto', 'manual'
+]);
+const PIO_KEYWORD_ALIASES = { optional: 'opt', sideset: 'side', side_set: 'side' };
+
+const PIO_MAX_INSTRUCTIONS = 32;
+
+function pioReverseBits(n) {
+    n = ((n >>> 1) & 0x55555555) | ((n & 0x55555555) << 1);
+    n = ((n >>> 2) & 0x33333333) | ((n & 0x33333333) << 2);
+    n = ((n >>> 4) & 0x0F0F0F0F) | ((n & 0x0F0F0F0F) << 4);
+    n = ((n >>> 8) & 0x00FF00FF) | ((n & 0x00FF00FF) << 8);
+    return ((n >>> 16) | (n << 16)) >>> 0;
+}
+
+// Decode a raw 16-bit instruction (datasheet "Instruction Set" encodings)
+// into the object form the emulator executes. Used for .word and for
+// OUT EXEC / MOV EXEC. `opts.sidesetCount` is the number of side-set data
+// bits, as declared by .side_set.
+function pioDecodeInstruction(word, opts) {
+    opts = opts || {};
+    const sidesetCount = opts.sidesetCount || 0;
+    const sidesetOpt = !!opts.sidesetOpt;
+    const version = opts.pioVersion === undefined ? 1 : opts.pioVersion;
+    word &= 0xFFFF;
+
+    const hex = '0x' + word.toString(16).padStart(4, '0');
+    const reserved = what => new Error(`instruction ${hex}: ${what} is a reserved encoding`);
+    const needV1 = what => {
+        if (version < 1) throw new Error(`instruction ${hex}: ${what} needs PIO version 1 (RP2350)`);
+    };
+
+    const field = (word >> 8) & 0x1F;
+    const sideBits = sidesetCount + (sidesetOpt ? 1 : 0);
+    const delayBits = 5 - sideBits;
+    const delay = field & ((1 << delayBits) - 1);
+    let sideSet = null;
+    if (sideBits > 0) {
+        const sideField = field >> delayBits;
+        const data = sideField & ((1 << sidesetCount) - 1);
+        if (!sidesetOpt || ((sideField >> sidesetCount) & 1)) sideSet = data;
+    }
+
+    const arg1 = (word >> 5) & 7;
+    const arg2 = word & 0x1F;
+    const irqMode = (idx) => {
+        if (version < 1) return { rel: (idx & 0x10) !== 0, prev: false, next: false };
+        const mode = (idx >> 3) & 3;
+        return { rel: mode === 2, prev: mode === 1, next: mode === 3 };
+    };
+
+    let instr;
+    switch (word >> 13) {
+        case 0: {
+            const cond = ['', '!x', 'x--', '!y', 'y--', 'x!=y', 'pin', '!osre'][arg1];
+            instr = { type: 'JMP', cond, target: arg2 };
+            break;
+        }
+        case 1: {
+            const polarity = (arg1 >> 2) & 1;
+            const source = ['gpio', 'pin', 'irq', 'jmppin'][arg1 & 3];
+            if (source === 'jmppin') needV1('WAIT JMPPIN');
+            if (source === 'irq') {
+                instr = Object.assign({ type: 'WAIT', polarity, source, index: arg2 & 7 }, irqMode(arg2));
+            } else {
+                instr = { type: 'WAIT', polarity, source, index: arg2, rel: false, prev: false, next: false };
+            }
+            break;
+        }
+        case 2: {
+            const source = ['pins', 'x', 'y', 'null', null, 'status', 'isr', 'osr'][arg1];
+            if (source === null) throw reserved('IN source 4');
+            instr = { type: 'IN', source, bitCount: arg2 || 32 };
+            break;
+        }
+        case 3: {
+            const dest = ['pins', 'x', 'y', 'null', 'pindirs', 'pc', 'isr', 'exec'][arg1];
+            instr = { type: 'OUT', dest, bitCount: arg2 || 32 };
+            break;
+        }
+        case 4: {
+            const isPull = (arg1 >> 2) & 1;
+            if (arg2 & 0x10) {
+                // RP2350: MOV to/from the RX FIFO storage registers.
+                needV1('MOV RXFIFO');
+                const index = (arg2 & 8) ? (arg2 & 3) : null; // null: indexed by Y
+                instr = isPull
+                    ? { type: 'MOV', dest: 'osr', src: 'rxfifo', op: '', index }
+                    : { type: 'MOV', dest: 'rxfifo', src: 'isr', op: '', index };
+            } else if (isPull) {
+                instr = { type: 'PULL', ifempty: !!(arg1 & 2), block: !!(arg1 & 1) };
+            } else {
+                instr = { type: 'PUSH', iffull: !!(arg1 & 2), block: !!(arg1 & 1) };
+            }
+            break;
+        }
+        case 5: {
+            const dest = ['pins', 'x', 'y', 'pindirs', 'exec', 'pc', 'isr', 'osr'][arg1];
+            if (dest === 'pindirs') needV1('MOV PINDIRS');
+            const opCode = (arg2 >> 3) & 3;
+            if (opCode === 3) throw reserved('MOV operation 3');
+            const src = ['pins', 'x', 'y', 'null', null, 'status', 'isr', 'osr'][arg2 & 7];
+            if (src === null) throw reserved('MOV source 4');
+            instr = { type: 'MOV', dest, src, op: ['', '~', '::'][opCode] };
+            break;
+        }
+        case 6: {
+            if (arg1 & 4) throw reserved('IRQ with bit 7 set');
+            instr = Object.assign(
+                { type: 'IRQ', clear: !!(arg1 & 2), wait: !!(arg1 & 1), index: arg2 & 7 },
+                irqMode(arg2));
+            break;
+        }
+        default: {
+            const dest = ['pins', 'x', 'y', null, 'pindirs', null, null, null][arg1];
+            if (dest === null) throw reserved(`SET destination ${arg1}`);
+            instr = { type: 'SET', dest, value: arg2 };
+            break;
+        }
+    }
+
+    instr.sideSet = sideSet;
+    instr.delay = delay;
+    return instr;
+}
+
 class PioAssembler {
     constructor() {
-        this.labels = {};
-        this.defines = {};
-        this.origin = null;
-        this.instructions = [];
-        this.programName = "program";
-        this.wrapTarget = 0;
-        this.wrap = 0;
-        this.sidesetCount = 0;
-        this.sidesetOpt = false;
-        this.sidesetPindirs = false;
+        this.programName = 'program';
     }
 
     assemble(sourceCode) {
-        this.labels = {};
-        this.defines = {};
-        this.origin = null;
-        this.instructions = [];
-        this.wrapTarget = -1;
-        this.wrap = -1;
-        this.sidesetCount = 0;
-        this.sidesetOpt = false;
-        this.sidesetPindirs = false;
+        this.programName = 'program';
         this.programCount = 0;
-        this.stimuli = [];
+        this.pioVersion = 1;
+        this.symbols = new Map();   // name -> { isLabel, expr, line, resolving }
+        this.items = [];            // instructions before resolution
+        this.sideset = null;        // { expr, opt, pindirs }
+        this.wrapTarget = null;
+        this.wrap = null;
+        this.origin = null;
+        this.fifo = 'txrx';
+        this.dirIn = null;
+        this.dirOut = null;
+        this.dirSet = null;
+        this.movStatus = null;
+        this.pragmas = [];
 
-        const lines = sourceCode.split('\n');
-        let pc = 0;
+        const rawLines = sourceCode.replace(/\r/g, '').split('\n');
+        const scanned = PioAssembler.scanLines(rawLines);
 
-        // First pass: collect labels and directives
-        for (let i = 0; i < lines.length; i++) {
-            let line = lines[i].trim();
+        for (let i = 0; i < scanned.length; i++) {
+            this.line = i + 1;
+            if (scanned[i].pragma !== null) {
+                this.pragmas.push({ body: scanned[i].pragma, line: this.line });
+                continue;
+            }
+            try {
+                this.parseLine(PioAssembler.tokenize(scanned[i].code), rawLines[i]);
+            } catch (e) {
+                throw new Error(`Line ${this.line}: ${e.message}`);
+            }
+        }
 
-            // Simulator-only pragma, written as a comment so that pioasm
-            // ignores it:  ; #pragma pio_sim pin 5 hi 3 low 7
-            const pragma = line.match(/^;\s*#pragma\s+pio_sim\b([^;]*)/i);
-            if (pragma) {
-                try {
-                    this.handlePragma(pragma[1]);
-                } catch (e) {
-                    throw new Error(`Line ${i + 1}: ${e.message}`);
-                }
+        return this.finalize();
+    }
+
+    // Strip comments (`;`, `//`, `/* */`) and `% lang { ... %}` pass-through
+    // blocks. Returns one { code, pragma } per source line, where `pragma`
+    // is the body of a `; #pragma pio_sim ...` comment line, or null.
+    static scanLines(rawLines) {
+        const out = [];
+        let state = 'code';
+        for (const raw of rawLines) {
+            let code = '';
+            let pragma = null;
+
+            if (state === 'passthrough') {
+                if (raw.trim() === '%}') state = 'code';
+                out.push({ code, pragma });
                 continue;
             }
 
-            const commentIndex = line.indexOf(';');
-            if (commentIndex !== -1) {
-                line = line.substring(0, commentIndex).trim();
-            }
-            if (line === '') continue;
+            let i = 0;
+            while (i < raw.length) {
+                if (state === 'block') {
+                    const end = raw.indexOf('*/', i);
+                    if (end === -1) {
+                        i = raw.length;
+                    } else {
+                        i = end + 2;
+                        state = 'code';
+                        code += ' ';
+                    }
+                    continue;
+                }
 
-            let colonIndex = line.indexOf(':');
-            while (colonIndex !== -1 && colonIndex + 1 < line.length && line[colonIndex + 1] === ':') {
-                colonIndex = line.indexOf(':', colonIndex + 2);
-            }
-            if (colonIndex !== -1) {
-                const labelName = line.substring(0, colonIndex).trim();
-                this.labels[labelName] = pc;
-                line = line.substring(colonIndex + 1).trim();
-            }
+                // .lang_opt takes free-form text up to the end of the line.
+                if (/^\s*\.lang_opt\b/i.test(code)) {
+                    code += raw.substring(i);
+                    break;
+                }
 
-            if (line === '') continue;
+                const two = raw.substr(i, 2);
+                if (raw[i] === ';' || two === '//') {
+                    if (code.trim() === '') {
+                        const text = raw.substring(i + (raw[i] === ';' ? 1 : 2));
+                        const m = text.match(/^\s*#pragma\s+pio_sim\b(.*)$/i);
+                        if (m) pragma = m[1].split(/;|\/\//)[0];
+                    }
+                    break;
+                }
+                if (two === '/*') {
+                    state = 'block';
+                    i += 2;
+                    continue;
+                }
+                if (raw[i] === '%' && /^%[ \t]*[^%]+\{/.test(raw.substring(i))) {
+                    state = 'passthrough';
+                    break;
+                }
+                code += raw[i];
+                i++;
+            }
+            out.push({ code, pragma });
+        }
+        return out;
+    }
 
-            if (line.startsWith('.')) {
-                try {
-                    this.handleDirective(line, pc);
-                } catch (e) {
-                    throw new Error(`Line ${i + 1}: ${e.message}`);
+    static tokenize(code) {
+        const tokens = [];
+        if (/^\s*\.lang_opt\b/i.test(code)) {
+            return [{ t: 'dir', s: '.lang_opt' }];
+        }
+        const re = /\s+|0x[0-9a-fA-F]+|0b[01]+|\d*\.\d+|\d+|[A-Za-z_][A-Za-z0-9_]*|\.[A-Za-z_][A-Za-z0-9_]*|::|--|−−|!=|<<|>>|[,:\[\]()+\-*\/|&^!~<]/y;
+        let pos = 0;
+        while (pos < code.length) {
+            re.lastIndex = pos;
+            const m = re.exec(code);
+            if (!m) throw new Error(`invalid character: ${code[pos]}`);
+            pos = re.lastIndex;
+            const s = m[0];
+            if (/^\s/.test(s)) continue;
+
+            if (/^0x/i.test(s) || /^0b/i.test(s) || /^\d+$/.test(s)) {
+                const v = /^0x/i.test(s) ? parseInt(s.substring(2), 16)
+                    : /^0b/i.test(s) ? parseInt(s.substring(2), 2)
+                        : parseInt(s, 10);
+                if (v > 0x7FFFFFFF) throw new Error(`integer is out of range: ${s}`);
+                tokens.push({ t: 'int', v, s });
+            } else if (/^\d*\.\d+$/.test(s)) {
+                tokens.push({ t: 'float', v: parseFloat(s), s });
+            } else if (s[0] === '.') {
+                tokens.push({ t: 'dir', s: s.toLowerCase() });
+            } else if (/^[A-Za-z_]/.test(s)) {
+                let k = s.toLowerCase();
+                if (k in PIO_KEYWORD_ALIASES) k = PIO_KEYWORD_ALIASES[k];
+                if (k === 'one' || k === 'zero') {
+                    tokens.push({ t: 'int', v: k === 'one' ? 1 : 0, s });
+                } else {
+                    tokens.push({ t: 'id', s, k: PIO_KEYWORDS.has(k) ? k : null });
                 }
             } else {
-                pc++;
+                let p = s;
+                if (p === '−−') p = '--';
+                if (p === '~') p = '!';
+                tokens.push({ t: 'p', s: p });
             }
         }
+        return tokens;
+    }
 
-        // Default wrap points if not specified
-        if (this.wrap === -1) this.wrap = pc - 1;
-        if (this.wrapTarget === -1) this.wrapTarget = 0;
+    // ---- parsing ---------------------------------------------------------
 
-        // Second pass: generate instructions
-        pc = 0;
-        const programMap = [];
-        for (let i = 0; i < lines.length; i++) {
-            let line = lines[i].trim();
-            const commentIndex = line.indexOf(';');
-            if (commentIndex !== -1) {
-                line = line.substring(0, commentIndex).trim();
+    parseLine(tokens, rawText) {
+        if (tokens.length === 0) return;
+        this.tok = tokens;
+        this.pos = 0;
+
+        if (this.peek().t === 'dir') {
+            this.parseDirective(rawText);
+            this.expectEnd();
+            return;
+        }
+
+        const label = this.tryLabel();
+        if (label) {
+            this.addSymbol(label.name, true, { t: 'int', v: this.items.length });
+            if (this.atEnd()) return;
+        }
+
+        const item = this.parseInstruction();
+        this.expectEnd();
+        this.addItem(item, rawText);
+    }
+
+    peek(offset = 0) {
+        return this.tok[this.pos + offset] || { t: 'end', s: 'end of line' };
+    }
+
+    atEnd() {
+        return this.pos >= this.tok.length;
+    }
+
+    isP(s, offset = 0) {
+        const t = this.peek(offset);
+        return t.t === 'p' && t.s === s;
+    }
+
+    isK(k, offset = 0) {
+        const t = this.peek(offset);
+        return t.t === 'id' && t.k === k;
+    }
+
+    isName(offset = 0) {
+        const t = this.peek(offset);
+        return t.t === 'id' && t.k === null;
+    }
+
+    acceptP(s) {
+        if (this.isP(s)) { this.pos++; return true; }
+        return false;
+    }
+
+    acceptK(k) {
+        if (this.isK(k)) { this.pos++; return true; }
+        return false;
+    }
+
+    // First matching keyword from `list`, consumed; or null.
+    acceptAnyK(list) {
+        const t = this.peek();
+        if (t.t === 'id' && t.k !== null && list.includes(t.k)) {
+            this.pos++;
+            return t.k;
+        }
+        return null;
+    }
+
+    unexpected(expected) {
+        const t = this.peek();
+        const got = t.t === 'end' ? 'end of line' : `'${t.s}'`;
+        return new Error(`unexpected ${got}${expected ? `, expected ${expected}` : ''}`);
+    }
+
+    expectP(s) {
+        if (!this.acceptP(s)) throw this.unexpected(`'${s}'`);
+    }
+
+    expectEnd() {
+        if (!this.atEnd()) throw this.unexpected('end of line');
+    }
+
+    // symbol_def: ID | PUBLIC ID | * ID
+    parseSymbolDef() {
+        if (this.isK('public') || this.isP('*')) this.pos++;
+        if (!this.isName()) {
+            const t = this.peek();
+            if (t.t === 'id') throw new Error(`'${t.s}' is a reserved word and cannot be used as a name`);
+            throw this.unexpected('a name');
+        }
+        return this.tok[this.pos++].s;
+    }
+
+    tryLabel() {
+        let n = 0;
+        if (this.isK('public') || this.isP('*')) n = 1;
+        if (this.peek(n).t === 'id' && this.peek(n).k !== null && this.isP(':', n + 1)) {
+            throw new Error(`'${this.peek(n).s}' is a reserved word and cannot be used as a label`);
+        }
+        if (this.isName(n) && this.isP(':', n + 1)) {
+            const name = this.peek(n).s;
+            this.pos += n + 2;
+            return { name };
+        }
+        return null;
+    }
+
+    // value: INT | ID | ( expression )
+    parseValue() {
+        const t = this.peek();
+        if (t.t === 'int') {
+            this.pos++;
+            return { t: 'int', v: t.v };
+        }
+        if (t.t === 'id' && t.k === null) {
+            this.pos++;
+            return { t: 'name', name: t.s };
+        }
+        if (this.acceptP('(')) {
+            const e = this.parseExpr(1);
+            this.expectP(')');
+            return e;
+        }
+        throw this.unexpected('a value');
+    }
+
+    // Binary operator precedence, lowest first, as declared in parser.yy:
+    //   <<  >>   then   +  -   then   *  /   then   &  |  ^
+    // Unary minus binds like binary minus; unary :: binds loosest of all.
+    static binaryPrecedence(tok) {
+        if (tok.t !== 'p') return 0;
+        switch (tok.s) {
+            case '<<': case '>>': return 1;
+            case '+': case '-': return 2;
+            case '*': case '/': return 3;
+            case '&': case '|': case '^': return 4;
+            default: return 0;
+        }
+    }
+
+    parseExpr(minPrec) {
+        let left;
+        if (this.acceptP('-')) {
+            left = { t: 'un', op: '-', a: this.parseExpr(3) };
+        } else if (this.acceptP('::')) {
+            left = { t: 'un', op: '::', a: this.parseExpr(1) };
+        } else {
+            left = this.parseValue();
+        }
+        for (;;) {
+            const p = PioAssembler.binaryPrecedence(this.peek());
+            if (p === 0 || p < minPrec) return left;
+            const op = this.tok[this.pos++].s;
+            left = { t: 'bin', op, l: left, r: this.parseExpr(p + 1) };
+        }
+    }
+
+    requireVersion(version, what) {
+        if (this.pioVersion < version) {
+            throw new Error(`${what} requires PIO version ${version} (RP2350); this program targets version ${this.pioVersion}`);
+        }
+    }
+
+    beforeInstructions(directive) {
+        if (this.items.length > 0) {
+            throw new Error(`${directive} must precede any program instructions`);
+        }
+    }
+
+    parseDirective(rawText) {
+        const dir = this.tok[this.pos++].s;
+        switch (dir) {
+            case '.program': {
+                if (!this.isName()) throw this.unexpected('a program name');
+                const name = this.tok[this.pos++].s;
+                // One source is one state machine: a second program would
+                // need a second state machine to run on.
+                this.programCount++;
+                if (this.programCount > 1) {
+                    throw new Error(`multiple .program blocks are not supported ('${this.programName}', then '${name}'). This simulator runs a single state machine, so keep one .program per source.`);
+                }
+                if (this.items.length > 0) {
+                    throw new Error('.program must precede any program instructions');
+                }
+                this.programName = name;
+                break;
             }
-            if (line === '') continue;
-
-            let colonIndex = line.indexOf(':');
-            while (colonIndex !== -1 && colonIndex + 1 < line.length && line[colonIndex + 1] === ':') {
-                colonIndex = line.indexOf(':', colonIndex + 2);
+            case '.define': {
+                const name = this.parseSymbolDef();
+                this.addSymbol(name, false, this.parseExpr(1));
+                break;
             }
-            if (colonIndex !== -1) {
-                line = line.substring(colonIndex + 1).trim();
+            case '.origin':
+                this.beforeInstructions('.origin');
+                this.origin = { expr: this.parseValue(), line: this.line };
+                break;
+            case '.pio_version': {
+                this.beforeInstructions('.pio_version');
+                let v;
+                if (this.acceptK('rp2040')) v = 0;
+                else if (this.acceptK('rp2350')) v = 1;
+                else if (this.peek().t === 'int') v = this.tok[this.pos++].v;
+                else throw this.unexpected('0, 1, rp2040 or rp2350');
+                if (v < 0 || v > 1) throw new Error('only PIO versions 0 (rp2040) and 1 (rp2350) are supported');
+                this.pioVersion = v;
+                break;
+            }
+            case '.side_set': {
+                this.beforeInstructions('.side_set');
+                const expr = this.parseValue();
+                const opt = this.acceptK('opt');
+                const pindirs = this.acceptK('pindirs');
+                this.sideset = { expr, opt, pindirs, line: this.line };
+                break;
+            }
+            case '.in':
+            case '.out': {
+                this.beforeInstructions(dir);
+                const count = this.parseValue();
+                let right = true;
+                if (this.acceptK('left')) right = false;
+                else this.acceptK('right');
+                let auto = false;
+                if (this.acceptK('auto')) auto = true;
+                else this.acceptK('manual');
+                const threshold = this.atEnd() ? { t: 'int', v: 32 } : this.parseValue();
+                const cfg = { count, right, auto, threshold, line: this.line };
+                if (dir === '.in') this.dirIn = cfg;
+                else this.dirOut = cfg;
+                break;
+            }
+            case '.set':
+                this.beforeInstructions('.set');
+                this.dirSet = { expr: this.parseValue(), line: this.line };
+                break;
+            case '.wrap_target':
+                if (this.wrapTarget !== null) throw new Error('.wrap_target was already specified');
+                this.wrapTarget = this.items.length;
+                break;
+            case '.wrap':
+                if (this.wrap !== null) throw new Error('.wrap was already specified');
+                if (this.items.length === 0) {
+                    throw new Error('.wrap cannot be placed before the first program instruction');
+                }
+                this.wrap = this.items.length - 1;
+                break;
+            case '.word':
+                this.addItem({ kind: 'word', expr: this.parseValue(), side: null, delay: null }, rawText);
+                break;
+            case '.lang_opt':
+                // Options for pioasm's output generators; nothing to simulate.
+                break;
+            case '.clock_div': {
+                // The simulator counts state machine cycles, so the divider
+                // only stretches real time. Validate it and move on.
+                const t = this.peek();
+                if (t.t !== 'int' && t.t !== 'float') throw this.unexpected('a clock divider');
+                this.pos++;
+                if (t.v < 1 || t.v >= 65536) throw new Error('clock divider must be between 1 and 65535');
+                break;
+            }
+            case '.fifo': {
+                this.beforeInstructions('.fifo');
+                const cfg = this.acceptAnyK(['txrx', 'tx', 'rx', 'txput', 'txget', 'putget']);
+                if (cfg === null) throw this.unexpected('txrx, tx, rx, txput, txget or putget');
+                if (cfg === 'txput' || cfg === 'txget' || cfg === 'putget') {
+                    this.requireVersion(1, `.fifo ${cfg}`);
+                }
+                this.fifo = cfg;
+                break;
+            }
+            case '.mov_status': {
+                this.beforeInstructions('.mov_status');
+                if (this.acceptK('txfifo')) {
+                    this.expectP('<');
+                    this.movStatus = { type: 'tx', n: this.parseValue() };
+                } else if (this.acceptK('rxfifo')) {
+                    this.expectP('<');
+                    this.movStatus = { type: 'rx', n: this.parseValue() };
+                } else if (this.acceptK('irq')) {
+                    let param = 0;
+                    if (this.acceptK('prev')) param = 1;
+                    else if (this.acceptK('next')) param = 2;
+                    if (!this.acceptK('set')) throw this.unexpected("'set'");
+                    this.requireVersion(1, '.mov_status irq');
+                    this.movStatus = { type: 'irq', n: this.parseValue(), param };
+                } else {
+                    throw new Error("expected 'txfifo < N', 'rxfifo < N' or 'irq set N'");
+                }
+                this.movStatus.line = this.line;
+                break;
+            }
+            default:
+                throw new Error(`unknown directive ${dir}`);
+        }
+    }
+
+    // instruction: base (side <value>) ([<delay>]), side and delay in either order
+    parseInstruction() {
+        const item = this.parseBase();
+        item.side = null;
+        item.delay = null;
+        for (let n = 0; n < 2; n++) {
+            if (item.side === null && this.acceptK('side')) {
+                item.side = this.parseValue();
+            } else if (item.delay === null && this.acceptP('[')) {
+                item.delay = this.parseExpr(1);
+                this.expectP(']');
+            } else {
+                break;
+            }
+        }
+        return item;
+    }
+
+    parseBase() {
+        const t = this.peek();
+        const op = t.t === 'id' ? t.k : null;
+        const instructions = ['nop', 'jmp', 'wait', 'in', 'out', 'push', 'pull', 'mov', 'irq', 'set'];
+        if (!instructions.includes(op)) {
+            if (t.t === 'id' && t.k === null) throw new Error(`Unknown instruction: ${t.s}`);
+            throw this.unexpected('an instruction');
+        }
+        this.pos++;
+
+        const operand = (list, what) => {
+            const k = this.acceptAnyK(list);
+            if (k === null) throw this.unexpected(`${what} (${list.join(', ')})`);
+            return k;
+        };
+
+        switch (op) {
+            case 'nop':
+                return { kind: 'instr', type: 'MOV', dest: 'y', src: 'y', op: '' };
+
+            case 'jmp': {
+                let cond = '';
+                if (this.isP('!') && this.isK('x', 1)) { cond = '!x'; this.pos += 2; }
+                else if (this.isP('!') && this.isK('y', 1)) { cond = '!y'; this.pos += 2; }
+                else if (this.isP('!') && this.isK('osre', 1)) { cond = '!osre'; this.pos += 2; }
+                else if (this.isK('x') && this.isP('--', 1)) { cond = 'x--'; this.pos += 2; }
+                else if (this.isK('y') && this.isP('--', 1)) { cond = 'y--'; this.pos += 2; }
+                else if (this.isK('x') && this.isP('!=', 1) && this.isK('y', 2)) { cond = 'x!=y'; this.pos += 3; }
+                else if (this.isK('pin')) { cond = 'pin'; this.pos += 1; }
+                this.acceptP(',');
+                return { kind: 'instr', type: 'JMP', cond, target: this.parseExpr(1) };
             }
 
-            if (line === '') continue;
-            if (line.startsWith('.')) continue;
+            case 'wait': {
+                const sources = ['irq', 'gpio', 'pin', 'jmppin'];
+                const startsWithSource = this.peek().t === 'id' && sources.includes(this.peek().k);
+                const polarity = startsWithSource ? { t: 'int', v: 1 } : this.parseValue();
+                const source = this.acceptAnyK(sources);
+                if (source === null) throw this.unexpected('irq, gpio, pin or jmppin');
+                const item = { kind: 'instr', type: 'WAIT', polarity, source, rel: false, prev: false, next: false };
+                if (source === 'irq') {
+                    if (this.acceptK('prev')) item.prev = true;
+                    else if (this.acceptK('next')) item.next = true;
+                    if (item.prev || item.next) this.requireVersion(1, `wait irq ${item.prev ? 'prev' : 'next'}`);
+                    this.acceptP(',');
+                    item.index = this.parseValue();
+                    if (this.acceptK('rel')) {
+                        if (item.prev || item.next) {
+                            throw new Error(`'rel' is not supported for 'irq ${item.prev ? 'prev' : 'next'}'`);
+                        }
+                        item.rel = true;
+                    }
+                } else if (source === 'jmppin') {
+                    this.requireVersion(1, 'wait jmppin');
+                    item.index = this.acceptP('+') ? this.parseValue() : { t: 'int', v: 0 };
+                } else {
+                    this.acceptP(',');
+                    item.index = this.parseValue();
+                }
+                return item;
+            }
 
+            case 'in': {
+                const source = operand(['pins', 'x', 'y', 'null', 'isr', 'osr', 'status'], 'an IN source');
+                this.acceptP(',');
+                return { kind: 'instr', type: 'IN', source, bitCount: this.parseValue() };
+            }
+
+            case 'out': {
+                const dest = operand(['pins', 'x', 'y', 'null', 'pindirs', 'isr', 'pc', 'exec'], 'an OUT destination');
+                this.acceptP(',');
+                return { kind: 'instr', type: 'OUT', dest, bitCount: this.parseValue() };
+            }
+
+            case 'push': {
+                const iffull = this.acceptK('iffull');
+                const block = this.acceptK('noblock') ? false : (this.acceptK('block'), true);
+                if (this.fifo !== 'txrx' && this.fifo !== 'rx') {
+                    throw new Error("FIFO must be configured for 'txrx' or 'rx' to use this instruction");
+                }
+                return { kind: 'instr', type: 'PUSH', iffull, block };
+            }
+
+            case 'pull': {
+                const ifempty = this.acceptK('ifempty');
+                const block = this.acceptK('noblock') ? false : (this.acceptK('block'), true);
+                return { kind: 'instr', type: 'PULL', ifempty, block };
+            }
+
+            case 'mov': {
+                const item = { kind: 'instr', type: 'MOV', op: '', index: null };
+                const fifoIndex = () => {
+                    this.requireVersion(1, 'mov rxfifo[]');
+                    this.expectP('[');
+                    const idx = this.acceptK('y') ? null : this.parseValue();
+                    this.expectP(']');
+                    return idx;
+                };
+                if (this.acceptK('rxfifo')) {
+                    item.dest = 'rxfifo';
+                    item.index = fifoIndex();
+                } else {
+                    item.dest = operand(['pins', 'x', 'y', 'exec', 'pc', 'isr', 'osr', 'pindirs'], 'a MOV destination');
+                    if (item.dest === 'pindirs') this.requireVersion(1, 'mov pindirs');
+                }
+                this.acceptP(',');
+                if (this.acceptP('!')) item.op = '~';
+                else if (this.acceptP('::')) item.op = '::';
+                if (this.acceptK('rxfifo')) {
+                    item.src = 'rxfifo';
+                    item.index = fifoIndex();
+                } else {
+                    item.src = operand(['pins', 'x', 'y', 'null', 'status', 'isr', 'osr'], 'a MOV source');
+                }
+
+                if (item.dest === 'rxfifo') {
+                    if (item.src !== 'isr') throw new Error('mov rxfifo[] source must be isr');
+                    if (this.fifo !== 'txput' && this.fifo !== 'putget') {
+                        throw new Error("FIFO must be configured for 'txput' or 'putget' to use this instruction");
+                    }
+                } else if (item.src === 'rxfifo') {
+                    if (item.dest !== 'osr') throw new Error('mov ..., rxfifo[] target must be osr');
+                    if (this.fifo !== 'txget' && this.fifo !== 'putget') {
+                        throw new Error("FIFO must be configured for 'txget' or 'putget' to use this instruction");
+                    }
+                }
+                return item;
+            }
+
+            case 'irq': {
+                const item = { kind: 'instr', type: 'IRQ', clear: false, wait: false, rel: false, prev: false, next: false };
+                if (this.acceptK('prev')) item.prev = true;
+                else if (this.acceptK('next')) item.next = true;
+                if (item.prev || item.next) this.requireVersion(1, `irq ${item.prev ? 'prev' : 'next'}`);
+                if (this.acceptK('clear')) item.clear = true;
+                else if (this.acceptK('wait')) item.wait = true;
+                else if (!this.acceptK('nowait')) this.acceptK('set');
+                item.index = this.parseValue();
+                if (this.acceptK('rel')) {
+                    if (item.prev || item.next) {
+                        throw new Error(`'rel' is not supported for 'irq ${item.prev ? 'prev' : 'next'}'`);
+                    }
+                    item.rel = true;
+                }
+                return item;
+            }
+
+            default: { // set
+                const dest = operand(['pins', 'x', 'y', 'pindirs'], 'a SET destination');
+                this.acceptP(',');
+                return { kind: 'instr', type: 'SET', dest, value: this.parseValue() };
+            }
+        }
+    }
+
+    addSymbol(name, isLabel, expr) {
+        const existing = this.symbols.get(name);
+        if (existing) {
+            if (existing.isLabel !== isLabel) {
+                throw new Error(`'${name}' was already defined as a ${existing.isLabel ? 'label' : 'value'} at line ${existing.line}`);
+            }
+            throw new Error(`${isLabel ? 'label ' : ''}'${name}' was already defined at line ${existing.line}`);
+        }
+        this.symbols.set(name, { isLabel, expr, line: this.line, resolving: false });
+    }
+
+    addItem(item, rawText) {
+        if (this.items.length >= PIO_MAX_INSTRUCTIONS) {
+            throw new Error(`program instruction limit of ${PIO_MAX_INSTRUCTIONS} instruction(s) exceeded`);
+        }
+        item.line = this.line;
+        item.text = rawText;
+        this.items.push(item);
+    }
+
+    // ---- resolution ------------------------------------------------------
+
+    // Evaluate an expression with C `int` semantics, as pioasm does.
+    resolve(expr) {
+        switch (expr.t) {
+            case 'int':
+                return expr.v | 0;
+            case 'name': {
+                const sym = this.symbols.get(expr.name);
+                if (!sym) throw new Error(`undefined symbol '${expr.name}'`);
+                if (sym.resolving) throw new Error(`circular dependency in definition of '${expr.name}'`);
+                sym.resolving = true;
+                try {
+                    return this.resolve(sym.expr);
+                } finally {
+                    sym.resolving = false;
+                }
+            }
+            case 'un': {
+                const v = this.resolve(expr.a);
+                return expr.op === '-' ? (-v) | 0 : pioReverseBits(v) | 0;
+            }
+            default: {
+                const l = this.resolve(expr.l);
+                const r = this.resolve(expr.r);
+                switch (expr.op) {
+                    case '+': return (l + r) | 0;
+                    case '-': return (l - r) | 0;
+                    case '*': return Math.imul(l, r);
+                    case '/':
+                        if (r === 0) throw new Error('division by zero');
+                        return (l / r) | 0;
+                    case '&': return l & r;
+                    case '|': return l | r;
+                    case '^': return l ^ r;
+                    case '<<': return l << r;
+                    default: return l >> r;
+                }
+            }
+        }
+    }
+
+    finalize() {
+        const atLine = (line, fn) => {
             try {
-                const instr = this.parseInstruction(line, pc);
-                this.instructions.push(instr);
-                programMap.push({
-                    pc: pc,
-                    line: i + 1,
-                    text: lines[i] // original (with comments) for the program display
-                });
-                pc++;
+                return fn();
             } catch (e) {
-                throw new Error(`Line ${i + 1}: ${e.message}`);
+                throw new Error(`Line ${line}: ${e.message}`);
             }
+        };
+        const range = (v, lo, hi, what) => {
+            if (v < lo || v > hi) throw new Error(`${what} must be >= ${lo} and <= ${hi} (got ${v})`);
+            return v;
+        };
+
+        // Side-set layout: `count` data bits, plus an enable bit when opt.
+        let sidesetCount = 0;
+        let sidesetOpt = false;
+        let sidesetPindirs = false;
+        if (this.sideset) atLine(this.sideset.line, () => {
+            sidesetCount = this.resolve(this.sideset.expr);
+            sidesetOpt = this.sideset.opt;
+            sidesetPindirs = this.sideset.pindirs;
+            if (sidesetCount < 0) throw new Error('number of side set bits must be positive');
+            if (sidesetCount + (sidesetOpt ? 1 : 0) > 5) {
+                throw new Error(sidesetOpt
+                    ? 'maximum number of side set bits with optional is 4'
+                    : 'maximum number of side set bits is 5');
+            }
+        });
+        const sideBits = sidesetCount + (sidesetOpt ? 1 : 0);
+        const delayMax = (1 << (5 - sideBits)) - 1;
+        const sidesetMax = (1 << sidesetCount) - 1;
+        const decodeOpts = { sidesetCount, sidesetOpt, pioVersion: this.pioVersion };
+
+        const instructions = [];
+        const programMap = [];
+        this.items.forEach((item, pc) => atLine(item.line, () => {
+            let instr;
+            if (item.kind === 'word') {
+                const value = this.resolve(item.expr);
+                if (value < 0 || value > 0xFFFF) throw new Error('.word value must be a positive 16 bit value');
+                instr = pioDecodeInstruction(value, decodeOpts);
+            } else {
+                instr = this.buildInstruction(item, range);
+
+                let delay = 0;
+                if (item.delay !== null) {
+                    delay = this.resolve(item.delay);
+                    if (delay < 0) throw new Error('instruction delay must be positive');
+                    if (delay > delayMax) {
+                        throw new Error(delayMax === 31
+                            ? 'instruction delay must be <= 31'
+                            : `the instruction delay limit is ${delayMax} because of the .side_set declaration`);
+                    }
+                }
+
+                let sideSet = null;
+                if (item.side !== null) {
+                    if (!this.sideset) {
+                        throw new Error("'side' used but no side-set bits declared (add .side_set)");
+                    }
+                    sideSet = this.resolve(item.side);
+                    if (sideSet < 0) throw new Error('side set value must be >= 0');
+                    if (sideSet > sidesetMax) {
+                        throw new Error(`the maximum side set value is ${sidesetMax} for .side_set ${sidesetCount}`);
+                    }
+                } else if (this.sideset && !sidesetOpt) {
+                    throw new Error("instruction requires 'side' to specify side set value for the instruction because non optional sideset was specified for the program");
+                }
+
+                instr.sideSet = sideSet;
+                instr.delay = delay;
+            }
+            instructions.push(instr);
+            programMap.push({ pc, line: item.line, text: item.text });
+        }));
+
+        // Symbols, for reference by the caller.
+        const labels = {};
+        const defines = {};
+        for (const [name, sym] of this.symbols) {
+            const value = atLine(sym.line, () => this.resolve(sym.expr));
+            if (sym.isLabel) labels[name] = value;
+            else defines[name] = value;
         }
+
+        // State machine configuration requested by directives. Only the
+        // settings a directive actually names are reported.
+        const config = {};
+        if (this.dirOut) atLine(this.dirOut.line, () => {
+            const count = range(this.resolve(this.dirOut.count), 0, 32, 'out pin count');
+            const threshold = range(this.resolve(this.dirOut.threshold), 1, 32, 'threshold');
+            config.outCount = count;
+            config.outShiftDir = this.dirOut.right ? 'right' : 'left';
+            config.autoPull = this.dirOut.auto;
+            config.pullThresh = threshold;
+        });
+        if (this.dirIn) atLine(this.dirIn.line, () => {
+            const count = this.resolve(this.dirIn.count);
+            if (this.pioVersion === 0 && count !== 32) throw new Error('in pin count must be 32 for PIO version 0');
+            range(count, 1, 32, 'in pin count');
+            const threshold = range(this.resolve(this.dirIn.threshold), 1, 32, 'threshold');
+            if (this.dirIn.auto && ['txput', 'txget', 'putget'].includes(this.fifo)) {
+                throw new Error(`autopush is incompatible with the '.fifo ${this.fifo}' configuration`);
+            }
+            config.inCount = count;
+            config.inShiftDir = this.dirIn.right ? 'right' : 'left';
+            config.autoPush = this.dirIn.auto;
+            config.pushThresh = threshold;
+        });
+        if (this.dirSet) atLine(this.dirSet.line, () => {
+            config.setCount = range(this.resolve(this.dirSet.expr), 0, 5, 'set pin count');
+        });
+        if (this.fifo !== 'txrx') {
+            config.fifoMode = this.fifo;
+        }
+        if (this.movStatus) atLine(this.movStatus.line, () => {
+            const n = this.resolve(this.movStatus.n);
+            if (this.movStatus.type === 'irq') {
+                if (n < 0 || n > 7) throw new Error('irq number should be >= 0 and <= 7');
+                config.statusSel = 2;
+                config.statusN = this.movStatus.param * 8 + n;
+            } else {
+                if (n < 0 || n > 31) throw new Error('fifo depth should be >= 0 and <= 31');
+                config.statusSel = this.movStatus.type === 'rx' ? 1 : 0;
+                config.statusN = n;
+            }
+        });
+        const origin = this.origin === null
+            ? null
+            : atLine(this.origin.line, () => range(this.resolve(this.origin.expr), 0, 31, 'origin'));
+
+        // Simulator pragmas. A `config` pragma is explicit simulator setup,
+        // so it overrides what a directive set for the same setting.
+        const pragmaOut = { stimuli: [], irqEvents: [], config, configSeen: new Set() };
+        for (const p of this.pragmas) {
+            atLine(p.line, () => this.handlePragma(p.body, pragmaOut));
+        }
+        const stimuli = pragmaOut.stimuli;
+        const irqEvents = pragmaOut.irqEvents;
 
         return {
-            instructions: this.instructions,
-            labels: this.labels,
-            defines: this.defines,
-            origin: this.origin,
-            wrapTarget: this.wrapTarget,
-            wrap: this.wrap,
-            sidesetCount: this.sidesetCount,
-            sidesetOpt: this.sidesetOpt,
-            sidesetPindirs: this.sidesetPindirs,
-            stimuli: this.stimuli,
-            programMap: programMap
+            programName: this.programName,
+            pioVersion: this.pioVersion,
+            instructions,
+            labels,
+            defines,
+            origin,
+            wrapTarget: this.wrapTarget === null ? 0 : this.wrapTarget,
+            wrap: this.wrap === null ? instructions.length - 1 : this.wrap,
+            sidesetCount,
+            sidesetOpt,
+            sidesetPindirs,
+            config,
+            stimuli,
+            irqEvents,
+            programMap
         };
     }
 
-    // Parse the body of a `; #pragma pio_sim ...` comment.
+    buildInstruction(item, range) {
+        switch (item.type) {
+            case 'JMP': {
+                const target = this.resolve(item.target);
+                if (target < 0) throw new Error('jmp target address must be positive');
+                if (target >= this.items.length) {
+                    throw new Error(`jmp target address ${target} is beyond the end of the program`);
+                }
+                return { type: 'JMP', cond: item.cond, target };
+            }
+            case 'WAIT': {
+                const polarity = this.resolve(item.polarity);
+                if (polarity !== 0 && polarity !== 1) throw new Error("'wait' polarity must be 0 or 1");
+                const index = this.resolve(item.index);
+                switch (item.source) {
+                    case 'irq': range(index, 0, 7, 'irq number'); break;
+                    case 'gpio':
+                        if (index >= 32 && index <= 47 && this.pioVersion >= 1) {
+                            throw new Error('GPIO numbers above 31 are not supported by this simulator');
+                        }
+                        range(index, 0, 31, 'absolute GPIO number');
+                        break;
+                    case 'pin': range(index, 0, 31, 'pin number'); break;
+                    default: range(index, 0, 3, 'jmppin offset'); break;
+                }
+                return { type: 'WAIT', polarity, source: item.source, index, rel: item.rel, prev: item.prev, next: item.next };
+            }
+            case 'IN':
+                return { type: 'IN', source: item.source, bitCount: range(this.resolve(item.bitCount), 1, 32, "'in' bit count") };
+            case 'OUT':
+                return { type: 'OUT', dest: item.dest, bitCount: range(this.resolve(item.bitCount), 1, 32, "'out' bit count") };
+            case 'PUSH':
+                return { type: 'PUSH', iffull: item.iffull, block: item.block };
+            case 'PULL':
+                return { type: 'PULL', ifempty: item.ifempty, block: item.block };
+            case 'MOV': {
+                const instr = { type: 'MOV', dest: item.dest, src: item.src, op: item.op };
+                if (item.dest === 'rxfifo' || item.src === 'rxfifo') {
+                    // Indexed by Y (null) or by an immediate; hardware uses the two LSBs.
+                    instr.index = item.index === null ? null : range(this.resolve(item.index), 0, 7, 'FIFO index') & 3;
+                }
+                return instr;
+            }
+            case 'IRQ':
+                return {
+                    type: 'IRQ', clear: item.clear, wait: item.wait, rel: item.rel,
+                    prev: item.prev, next: item.next,
+                    index: range(this.resolve(item.index), 0, 7, 'irq number')
+                };
+            default:
+                return { type: 'SET', dest: item.dest, value: range(this.resolve(item.value), 0, 31, "'set' value") };
+        }
+    }
+
+    // ---- simulator pragmas ----------------------------------------------
+    //
+    // `; #pragma pio_sim ...` comment lines carry simulator setup in the
+    // source. pioasm sees ordinary comments. Three forms:
     //
     //   pin <n> [<level> delay <clocks>] <level> <clocks> ... [count <n>]
+    //   irq set|clear <n> [delay <clocks>] [repeat <clocks>] [count <n>]
+    //   config <name> <value> [<name> <value> ...]
     //
-    // Drives an input pin with a waveform counted in PIO clocks from reset.
-    // `<level>` is hi/high or low/lo. The `<level> <clocks>` segments form one
-    // period, repeated forever or `count` times; after that the pin holds the
-    // last level. An optional leading `<level> delay <clocks>` holds a level
-    // once before the first period.
-    handlePragma(body) {
+    // Numbers may be decimal, 0x hex, 0b binary, or a .define name.
+    handlePragma(body, out) {
         const tokens = body.trim().split(/\s+/).filter(t => t !== '');
+        const kind = (tokens[0] || '').toLowerCase();
+        switch (kind) {
+            case 'pin': this.pragmaPin(tokens, out.stimuli); break;
+            case 'irq': this.pragmaIrq(tokens, out.irqEvents); break;
+            case 'config': this.pragmaConfig(tokens, out.config, out.configSeen); break;
+            default:
+                throw new Error(`#pragma pio_sim: unknown pragma '${tokens[0] || ''}' (expected pin, irq or config)`);
+        }
+    }
+
+    pragmaNumber(tok, what, usage) {
+        if (tok !== undefined && this.symbols.has(tok)) {
+            return this.resolve({ t: 'name', name: tok });
+        }
+        if (tok === undefined || !/^(0x[0-9a-f]+|0b[01]+|\d+)$/i.test(tok)) {
+            throw new Error(`#pragma pio_sim: ${what} must be a non-negative integer, got '${tok === undefined ? '' : tok}' (${usage})`);
+        }
+        return /^0b/i.test(tok) ? parseInt(tok.substring(2), 2) : parseInt(tok);
+    }
+
+    // pin: drive an input pin with a waveform counted in PIO clocks from
+    // reset. `<level>` is hi/high or low/lo. The `<level> <clocks>` segments
+    // form one period, repeated forever or `count` times; after that the pin
+    // holds the last level. An optional leading `<level> delay <clocks>`
+    // holds a level once before the first period.
+    pragmaPin(tokens, stimuli) {
         const usage = `expected '; #pragma pio_sim pin <n> [<hi|low> delay <clocks>] <hi|low> <clocks> ... [count <n>]'`;
         const levels = { hi: 1, high: 1, low: 0, lo: 0 };
-
-        const num = (tok, what) => {
-            if (tok !== undefined && Object.prototype.hasOwnProperty.call(this.defines, tok)) {
-                return this.defines[tok];
-            }
-            if (tok === undefined || !/^(0x[0-9a-f]+|\d+)$/i.test(tok)) {
-                throw new Error(`#pragma pio_sim: ${what} must be a non-negative integer, got '${tok === undefined ? '' : tok}' (${usage})`);
-            }
-            return parseInt(tok);
-        };
-
-        if (tokens.length === 0 || tokens[0].toLowerCase() !== 'pin') {
-            throw new Error(`#pragma pio_sim: unknown pragma '${tokens[0] || ''}' (${usage})`);
-        }
+        const num = (tok, what) => this.pragmaNumber(tok, what, usage);
 
         const pin = num(tokens[1], 'pin number');
-        if (pin > 31) throw new Error(`#pragma pio_sim: pin ${pin} out of range 0-31`);
-        if (this.stimuli.some(s => s.pin === pin)) {
+        if (pin < 0 || pin > 31) throw new Error(`#pragma pio_sim: pin ${pin} out of range 0-31`);
+        if (stimuli.some(s => s.pin === pin)) {
             throw new Error(`#pragma pio_sim: pin ${pin} already has a stimulus`);
         }
 
@@ -190,6 +1107,7 @@ class PioAssembler {
                 }
                 stim.delayLevel = level;
                 stim.delay = num(tokens[i + 2], 'delay');
+                if (stim.delay < 0) throw new Error(`#pragma pio_sim: delay must not be negative`);
                 i += 3;
             } else {
                 const clocks = num(tokens[i + 1], `clock count after '${tokens[i]}'`);
@@ -205,295 +1123,97 @@ class PioAssembler {
         if (stim.segments.length === 0) {
             throw new Error(`#pragma pio_sim: pin ${pin} has no waveform (${usage})`);
         }
-        this.stimuli.push(stim);
+        stimuli.push(stim);
     }
 
-    handleDirective(line, pc) {
-        const parts = line.split(/\s+/);
-        const directive = parts[0];
+    // irq: raise or clear an IRQ flag at given clocks, standing in for the
+    // `irq set` / `irq clear` of another state machine. The first event is at
+    // clock `delay` (default 0); with `repeat` it recurs every that many
+    // clocks, forever or `count` times. The instruction executed on that
+    // clock already sees the new flag value.
+    pragmaIrq(tokens, irqEvents) {
+        const usage = `expected '; #pragma pio_sim irq set|clear <n> [delay <clocks>] [repeat <clocks>] [count <n>]'`;
+        const num = (tok, what) => this.pragmaNumber(tok, what, usage);
 
-        switch (directive) {
-            case '.program':
-                // One source is one state machine. Without this check a second
-                // .program would silently be appended to the first, and the
-                // wrap points of the last program would apply to the whole lot.
-                this.programCount++;
-                if (this.programCount > 1) {
-                    throw new Error(`multiple .program blocks are not supported ('${this.programName}', then '${parts[1] || ''}'). This simulator runs a single state machine, so keep one .program per source.`);
-                }
-                this.programName = parts[1];
-                break;
-            case '.wrap_target':
-                this.wrapTarget = pc;
-                break;
-            case '.wrap':
-                this.wrap = pc - 1;
-                break;
-            case '.side_set':
-                // .side_set count [opt] [pindirs]
-                this.sidesetCount = parseInt(parts[1]);
-                if (parts.includes('opt')) this.sidesetOpt = true;
-                if (parts.includes('pindirs')) this.sidesetPindirs = true;
-                // The Delay/side-set field is 5 bits. `count` data bits plus an
-                // extra enable bit when `opt` is present must fit within it.
-                if (isNaN(this.sidesetCount) || this.sidesetCount < 0 || this.sidesetCount > 5) {
-                    throw new Error(`.side_set count must be 0-5`);
-                }
-                if (this.sidesetCount + (this.sidesetOpt ? 1 : 0) > 5) {
-                    throw new Error(`.side_set ${this.sidesetCount} opt needs ${this.sidesetCount + 1} bits, exceeds the 5-bit field`);
-                }
-                break;
-            case '.define':
-                // .define name value  — defines a named constant
-                if (parts.length >= 3) {
-                    const name = parts[1];
-                    let val = parts[2];
-                    // Support expressions referencing other defines
-                    if (val in this.defines) {
-                        this.defines[name] = this.defines[val];
-                    } else {
-                        this.defines[name] = parseInt(val);
-                    }
-                }
-                break;
-            case '.origin':
-                // .origin N — set program origin offset
-                if (parts.length >= 2) {
-                    this.origin = parseInt(parts[1]);
-                }
-                break;
+        const action = (tokens[1] || '').toLowerCase();
+        if (action !== 'set' && action !== 'clear') {
+            throw new Error(`#pragma pio_sim: expected 'irq set' or 'irq clear', got 'irq ${tokens[1] || ''}' (${usage})`);
         }
+        const flag = num(tokens[2], 'irq number');
+        if (flag < 0 || flag > 7) throw new Error(`#pragma pio_sim: irq ${flag} out of range 0-7`);
+
+        const ev = { flag, action, delay: 0, repeat: null, count: null };
+        const seen = new Set();
+        for (let i = 3; i < tokens.length; i += 2) {
+            const key = tokens[i].toLowerCase();
+            if (key !== 'delay' && key !== 'repeat' && key !== 'count') {
+                throw new Error(`#pragma pio_sim: unexpected '${tokens[i]}' (${usage})`);
+            }
+            if (seen.has(key)) throw new Error(`#pragma pio_sim: '${key}' given twice`);
+            seen.add(key);
+            const v = num(tokens[i + 1], key);
+            if (key !== 'delay' && v < 1) throw new Error(`#pragma pio_sim: ${key} must be at least 1`);
+            if (v < 0) throw new Error(`#pragma pio_sim: ${key} must not be negative`);
+            ev[key] = v;
+        }
+        if (ev.count !== null && ev.repeat === null) {
+            throw new Error(`#pragma pio_sim: 'count' needs 'repeat' (${usage})`);
+        }
+        irqEvents.push(ev);
     }
 
-    resolveValue(str) {
-        if (str in this.defines) return this.defines[str];
-        if (str in this.labels) return this.labels[str];
-        return parseInt(str);
-    }
+    // config: state machine settings that pioasm directives cannot express
+    // (pin bases, JMP pin) or that the C setup code would normally apply.
+    // They are loaded into the simulator's controls on assemble.
+    pragmaConfig(tokens, config, seen) {
+        const names = Object.keys(PioAssembler.CONFIG_PRAGMA);
+        const usage = `expected '; #pragma pio_sim config <name> <value> ...' with names: ${names.join(', ')}`;
+        if (tokens.length < 3 || tokens.length % 2 !== 1) {
+            throw new Error(`#pragma pio_sim: config takes name/value pairs (${usage})`);
+        }
+        for (let i = 1; i < tokens.length; i += 2) {
+            const name = tokens[i].toLowerCase();
+            const def = PioAssembler.CONFIG_PRAGMA[name];
+            if (!def) throw new Error(`#pragma pio_sim: unknown config name '${tokens[i]}' (${usage})`);
+            if (seen.has(name)) throw new Error(`#pragma pio_sim: config '${name}' given twice`);
+            seen.add(name);
 
-    parseInstruction(line, pc) {
-        let sideSetVal = null;
-        let delay = 0;
-
-        const sideIndex = line.indexOf('side ');
-        let mainPart = line;
-
-        if (sideIndex !== -1) {
-            const sidePart = line.substring(sideIndex + 5).trim();
-            mainPart = line.substring(0, sideIndex).trim();
-
-            // sidePart may also carry a delay, e.g. "side 1 [2]"
-            const sideParts = sidePart.split(/\s+/);
-            let valStr = sideParts[0];
-
-            if (valStr.startsWith('0b')) {
-                sideSetVal = parseInt(valStr.substring(2), 2);
+            const raw = tokens[i + 1];
+            let value;
+            if (def.values) {
+                const k = raw.toLowerCase();
+                if (!Object.prototype.hasOwnProperty.call(def.values, k)) {
+                    throw new Error(`#pragma pio_sim: config ${name} must be one of ${Object.keys(def.values).join(', ')}, got '${raw}'`);
+                }
+                value = def.values[k];
             } else {
-                sideSetVal = parseInt(valStr);
-            }
-
-            if (sideParts.length > 1) {
-                const delayStr = sideParts[1];
-                if (delayStr.startsWith('[') && delayStr.endsWith(']')) {
-                    delay = parseInt(delayStr.substring(1, delayStr.length - 1));
+                value = this.pragmaNumber(raw, `config ${name}`, usage);
+                if (value < def.min || value > def.max) {
+                    throw new Error(`#pragma pio_sim: config ${name} must be ${def.min}-${def.max}, got ${value}`);
                 }
             }
-        } else {
-            const delayMatch = line.match(/\[(\d+)\]$/);
-            if (delayMatch) {
-                delay = parseInt(delayMatch[1]);
-                mainPart = line.substring(0, line.lastIndexOf('[')).trim();
-            }
+            config[def.key] = value;
         }
-
-        const parts = mainPart.match(/([^\s,]+)/g);
-        if (!parts) throw new Error("Empty instruction");
-
-        const op = parts[0].toLowerCase();
-        const args = parts.slice(1).map(s => s.replace(',', ''));
-
-        let instr = null;
-        switch (op) {
-            case 'jmp': instr = this.parseJmp(args, pc); break;
-            case 'wait': instr = this.parseWait(args); break;
-            case 'in': instr = this.parseIn(args); break;
-            case 'out': instr = this.parseOut(args); break;
-            case 'push': instr = this.parsePush(args); break;
-            case 'pull': instr = this.parsePull(args); break;
-            case 'mov': instr = this.parseMov(args); break;
-            case 'irq': instr = this.parseIrq(args); break;
-            case 'set': instr = this.parseSet(args); break;
-            case 'nop': instr = this.parseMov(['y', 'y']); break;
-            default: throw new Error(`Unknown instruction: ${op}`);
-        }
-        
-        this.validateSideDelay(sideSetVal, delay);
-
-        instr.sideSet = sideSetVal;
-        instr.delay = delay;
-        return instr;
-    }
-
-    // Check side-set value and delay against the .side_set configuration.
-    // The 5-bit Delay/side-set field is split into `sidesetCount` data bits
-    // (+1 enable bit when opt), leaving the rest for delay. See RP2350
-    // datasheet §11.4.1 / §11.5.1 and the .side_set directive (pioasm_side_set).
-    validateSideDelay(sideSetVal, delay) {
-        const sideTotalBits = this.sidesetCount + (this.sidesetOpt ? 1 : 0);
-        const delayBits = 5 - sideTotalBits;
-
-        if (sideSetVal !== null) {
-            if (this.sidesetCount === 0) {
-                throw new Error(`'side' used but no side-set bits declared (add .side_set)`);
-            }
-            const maxSide = (1 << this.sidesetCount) - 1;
-            if (sideSetVal < 0 || sideSetVal > maxSide) {
-                throw new Error(`side-set value ${sideSetVal} out of range 0-${maxSide} for .side_set ${this.sidesetCount}`);
-            }
-        } else if (this.sidesetCount > 0 && !this.sidesetOpt) {
-            throw new Error(`missing 'side' value (.side_set ${this.sidesetCount} is not optional, so every instruction needs one)`);
-        }
-
-        const maxDelay = (1 << delayBits) - 1;
-        if (delay < 0 || delay > maxDelay) {
-            throw new Error(`delay [${delay}] out of range 0-${maxDelay} (${delayBits} delay bits remain with side-set using ${sideTotalBits})`);
-        }
-    }
-
-    parseJmp(args, pc) {
-        // syntax: jmp [cond] target
-        let cond = '';
-        let target = '';
-        
-        if (args.length === 1) {
-            target = args[0];
-        } else {
-            cond = args[0];
-            target = args[1];
-        }
-
-        let targetPc = 0;
-        if (target in this.labels) {
-            targetPc = this.labels[target];
-        } else {
-            targetPc = parseInt(target);
-            if (isNaN(targetPc)) throw new Error(`Unknown label: ${target}`);
-        }
-
-        return { type: 'JMP', cond: cond, target: targetPc };
-    }
-
-    parseWait(args) {
-        // syntax: wait polarity {gpio|pin|irq|jmppin} index [rel]
-        // For irq: wait polarity irq index [rel]
-        // For jmppin (RP2350): wait polarity jmppin [count]
-        const polarity = this.resolveValue(args[0]);
-        const source = args[1];
-        let index = null;
-        let rel = false;
-
-        if (source === 'jmppin') {
-            // RP2350: WAIT JMPPIN — optional count argument
-            index = args.length > 2 ? this.resolveValue(args[2]) : 0;
-        } else if (source === 'irq') {
-            // Parse index and optional rel
-            for (let i = 2; i < args.length; i++) {
-                if (args[i] === 'rel') {
-                    rel = true;
-                } else {
-                    index = this.resolveValue(args[i]);
-                }
-            }
-        } else {
-            index = this.resolveValue(args[2]);
-        }
-
-        return { type: 'WAIT', polarity, source, index, rel };
-    }
-
-    parseIn(args) {
-        const source = args[0];
-        const bitCount = this.resolveValue(args[1]);
-        return { type: 'IN', source, bitCount };
-    }
-
-    parseOut(args) {
-        const dest = args[0];
-        const bitCount = this.resolveValue(args[1]);
-        return { type: 'OUT', dest, bitCount };
-    }
-
-    parsePush(args) {
-        // syntax: push [iffull] [block|noblock]
-        const iffull = args.includes('iffull') || args.includes('ifull');
-        const block = !args.includes('noblock');
-        return { type: 'PUSH', iffull, block };
-    }
-
-    parsePull(args) {
-        // syntax: pull [ifempty] [block|noblock]
-        const ifempty = args.includes('ifempty');
-        const block = !args.includes('noblock');
-        return { type: 'PULL', ifempty, block };
-    }
-
-    parseMov(args) {
-        // syntax: mov dest, [op] src
-        // The tokenizer splits on whitespace/commas, so an op fused to the src
-        // ("~y") arrives as 2 args; a spaced op (":: y") arrives as 3.
-        const dest = args[0];
-        let src = '';
-        let op = '';
-
-        if (args.length === 2) {
-            const s = args[1];
-            if (s.startsWith('~') || s.startsWith('!')) {
-                op = '~';
-                src = s.substring(1);
-            } else if (s.startsWith('::')) {
-                op = '::';
-                src = s.substring(2);
-            } else {
-                src = s;
-            }
-        } else if (args.length === 3) {
-            op = args[1];
-            src = args[2];
-        }
-        
-        return { type: 'MOV', dest, src, op };
-    }
-
-    parseIrq(args) {
-        // syntax: irq [clear|wait|set] index [rel]   e.g. irq 0 / irq clear 0
-        // RP2350 also supports: irq [prev|next] index
-        let clear = false;
-        let wait = false;
-        let rel = false;
-        let prev = false;
-        let next = false;
-        let indexStr = '';
-
-        for (let arg of args) {
-            if (arg === 'clear') clear = true;
-            else if (arg === 'wait') wait = true;
-            else if (arg === 'set') { /* default behavior, no flag needed */ }
-            else if (arg === 'rel') rel = true;
-            else if (arg === 'prev') prev = true;
-            else if (arg === 'next') next = true;
-            else indexStr = arg;
-        }
-
-        // RP2350: prev/next imply rel-like behavior
-        if (prev || next) rel = true;
-
-        const index = this.resolveValue(indexStr);
-        return { type: 'IRQ', clear, wait, rel, prev, next, index };
-    }
-
-    parseSet(args) {
-        const dest = args[0];
-        const value = this.resolveValue(args[1]);
-        return { type: 'SET', dest, value };
     }
 }
+
+// Names accepted by `; #pragma pio_sim config`, and the setting each maps to.
+PioAssembler.CONFIG_PRAGMA = {
+    out_base: { key: 'outBase', min: 0, max: 31 },
+    out_count: { key: 'outCount', min: 0, max: 32 },
+    set_base: { key: 'setBase', min: 0, max: 31 },
+    set_count: { key: 'setCount', min: 0, max: 5 },
+    sideset_base: { key: 'sidesetBase', min: 0, max: 31 },
+    in_base: { key: 'inBase', min: 0, max: 31 },
+    in_count: { key: 'inCount', min: 1, max: 32 },
+    jmp_pin: { key: 'jmpPin', min: 0, max: 31 },
+    in_shift: { key: 'inShiftDir', values: { left: 'left', right: 'right' } },
+    out_shift: { key: 'outShiftDir', values: { left: 'left', right: 'right' } },
+    autopush: { key: 'autoPush', values: { on: true, off: false } },
+    push_thresh: { key: 'pushThresh', min: 1, max: 32 },
+    autopull: { key: 'autoPull', values: { on: true, off: false } },
+    pull_thresh: { key: 'pullThresh', min: 1, max: 32 },
+    status_sel: { key: 'statusSel', values: { tx: 0, rx: 1, irq: 2 } },
+    status_n: { key: 'statusN', min: 0, max: 31 },
+    fifo: { key: 'fifoMode', values: { txrx: 'txrx', tx: 'tx', rx: 'rx', txput: 'txput', txget: 'txget', putget: 'putget' } }
+};

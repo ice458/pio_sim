@@ -29,12 +29,24 @@ const rxFifoList = document.getElementById('rx-fifo-list');
 const btnPopRx = document.getElementById('btn-pop-rx');
 const rxPopResult = document.getElementById('rx-pop-result');
 
+const rxFifoTitle = document.getElementById('rx-fifo-title');
+const rxPopControls = document.getElementById('rx-pop-controls');
+const rxRegControls = document.getElementById('rx-reg-controls');
+const rxRegIndex = document.getElementById('rx-reg-index');
+const rxRegInput = document.getElementById('rx-reg-input');
+const btnWriteRxReg = document.getElementById('btn-write-rx-reg');
+const rxRegNote = document.getElementById('rx-reg-note');
+
 const cfgOutBase = document.getElementById('cfg-out-base');
+const cfgOutCount = document.getElementById('cfg-out-count');
+const cfgOutCountHint = document.getElementById('cfg-out-count-hint');
 const cfgSetBase = document.getElementById('cfg-set-base');
 const cfgSetCount = document.getElementById('cfg-set-count');
 const cfgSidesetBase = document.getElementById('cfg-sideset-base');
 const cfgInBase = document.getElementById('cfg-in-base');
+const cfgInCount = document.getElementById('cfg-in-count');
 const cfgJmpPin = document.getElementById('cfg-jmp-pin');
+const cfgFifoMode = document.getElementById('cfg-fifo-mode');
 const cfgInShiftDir = document.getElementById('cfg-in-shift-dir');
 const cfgOutShiftDir = document.getElementById('cfg-out-shift-dir');
 const cfgAutoPush = document.getElementById('cfg-auto-push');
@@ -48,6 +60,7 @@ const gpioHexVal = document.getElementById('gpio-hex-val');
 const gpioIndicators = document.getElementById('gpio-indicators');
 const gpioFf1HexVal = document.getElementById('gpio-ff1-hex-val');
 const gpioFf2HexVal = document.getElementById('gpio-ff2-hex-val');
+const gpioSeenHexVal = document.getElementById('gpio-seen-hex-val');
 const gpioFf1Row = gpioFf1HexVal.parentElement;
 const gpioFf2Row = gpioFf2HexVal.parentElement;
 const btnBypassAll = document.getElementById('btn-bypass-all');
@@ -225,11 +238,10 @@ skip:
         code: `.program feature_test
 .side_set 1 opt
 
-; Config:
-; OUT/SET Base: 0
-; SIDESET Base: 4
-; IN Base: 0
-; JMP PIN: 5
+; Simulator settings, loaded on Assemble (plain comments for pioasm):
+; #pragma pio_sim config out_base 0 out_count 2 set_base 0
+; #pragma pio_sim config sideset_base 4 in_base 0 jmp_pin 5 in_shift left
+; Click GPIO 5 to drive the input.
 
     set pindirs, 3      side 0 ; Set GPIO 0,1 as Output
     
@@ -251,7 +263,7 @@ is_high:
     set pins, 0         side 1 ; Turn off GPIO 0,1
     jmp loop            side 0`,
         config: {
-            outBase: 0, setBase: 0, sidesetBase: 4, inBase: 0, jmpPin: 5,
+            outBase: 0, outCount: 2, setBase: 0, sidesetBase: 4, inBase: 0, jmpPin: 5,
             inShiftDir: 'left', outShiftDir: 'right',
             autoPush: false, pushThresh: 32, autoPull: false, pullThresh: 32
         }
@@ -267,15 +279,39 @@ is_high:
 ; GPIO 4: low for 12 clocks, then 3 pulses
 ; #pragma pio_sim pin 4 low delay 12 hi 1 low 9 count 3
 
-; Config:
-; SET Base: 0
-; IN Base: 0
+; Simulator settings, loaded on Assemble:
+; #pragma pio_sim config set_base 0 set_count 1 in_base 0
 
 .wrap_target
     wait 1 pin 5    ; Wait for GPIO 5 High
     set pins, 1     ; Copy it to GPIO 0
     wait 0 pin 5    ; Wait for GPIO 5 Low
     set pins, 0
+.wrap`,
+        config: {
+            outBase: 0, setBase: 0, sidesetBase: 0, inBase: 0, jmpPin: 0,
+            inShiftDir: 'right', outShiftDir: 'right',
+            autoPush: false, pushThresh: 32, autoPull: false, pullThresh: 32
+        }
+    },
+    irq_handshake: {
+        code: `.program ping
+
+; One half of a two state machine handshake. The partner is not
+; simulated: these IRQ events play its part (plain comments for pioasm).
+;
+; Partner sees IRQ 0 and clears it, as its "wait 1 irq 0" would:
+; #pragma pio_sim irq clear 0 delay 4 repeat 8
+; Partner hands control back, as its "irq set 1" would:
+; #pragma pio_sim irq set 1 delay 7 repeat 8
+
+; #pragma pio_sim config set_base 0 set_count 1
+
+.wrap_target
+    set pins, 1     ; Do this side's work
+    set pins, 0
+    irq set 0       ; Wake the partner
+    wait 1 irq 1    ; Stall until the partner raises IRQ 1 (clears it)
 .wrap`,
         config: {
             outBase: 0, setBase: 0, sidesetBase: 0, inBase: 0, jmpPin: 0,
@@ -291,7 +327,14 @@ exampleSelect.addEventListener('change', () => {
         const ex = examples[key];
         codeEditor.value = ex.code;
 
+        // Every control is set here, so nothing is left over from the
+        // previous source for applyProgramConfig to undo.
+        settingsFromDirectives = new Set();
         cfgOutBase.value = ex.config.outBase;
+        // Anything an example does not mention goes back to its reset value.
+        cfgOutCount.value = ex.config.outCount !== undefined ? ex.config.outCount : 0;
+        cfgInCount.value = ex.config.inCount !== undefined ? ex.config.inCount : 32;
+        cfgFifoMode.value = ex.config.fifoMode !== undefined ? ex.config.fifoMode : 'txrx';
         cfgSetBase.value = ex.config.setBase;
         if (ex.config.setCount !== undefined) {
             cfgSetCount.value = ex.config.setCount;
@@ -314,13 +357,26 @@ exampleSelect.addEventListener('change', () => {
     }
 });
 
+// Read a numeric setting, clamped to the range of its hardware field.
+function readSetting(input, lo, hi, fallback) {
+    let v = parseInt(input.value);
+    if (isNaN(v)) v = fallback;
+    v = Math.min(hi, Math.max(lo, v));
+    if (String(v) !== input.value) input.value = v;
+    return v;
+}
+
 function updateConfig() {
-    emulator.outBase = parseInt(cfgOutBase.value);
-    emulator.setBase = parseInt(cfgSetBase.value);
-    emulator.setCount = parseInt(cfgSetCount.value);
-    emulator.sidesetBase = parseInt(cfgSidesetBase.value);
-    emulator.inBase = parseInt(cfgInBase.value);
-    emulator.jmpPin = parseInt(cfgJmpPin.value);
+    emulator.outBase = readSetting(cfgOutBase, 0, 31, 0);
+    emulator.outCount = readSetting(cfgOutCount, 0, 32, 0);
+    emulator.setBase = readSetting(cfgSetBase, 0, 31, 0);
+    emulator.setCount = readSetting(cfgSetCount, 0, 5, 5);
+    emulator.sidesetBase = readSetting(cfgSidesetBase, 0, 31, 0);
+    emulator.inBase = readSetting(cfgInBase, 0, 31, 0);
+    emulator.inCount = readSetting(cfgInCount, 1, 32, 32);
+    emulator.jmpPin = readSetting(cfgJmpPin, 0, 31, 0);
+    emulator.setFifoMode(cfgFifoMode.value);
+    updateOutCountHint();
     emulator.inShiftDir = cfgInShiftDir.value;
     emulator.outShiftDir = cfgOutShiftDir.value;
     emulator.autoPush = cfgAutoPush.checked;
@@ -328,9 +384,26 @@ function updateConfig() {
     emulator.autoPull = cfgAutoPull.checked;
     emulator.pullThresh = parseInt(cfgPullThresh.value);
     emulator.statusSel = parseInt(cfgStatusSel.value);
-    emulator.statusN = parseInt(cfgStatusN.value);
+    emulator.statusN = readSetting(cfgStatusN, 0, 31, 0);
 }
 
+// OUT_COUNT resets to 0 on hardware, which makes OUT/MOV to pins do nothing.
+// Point that out when the loaded program relies on it.
+function updateOutCountHint() {
+    const usesOutPins = emulator.instructions.some(instr =>
+        (instr.type === 'OUT' || instr.type === 'MOV') &&
+        (instr.dest === 'pins' || instr.dest === 'pindirs'));
+    cfgOutCountHint.style.display = (usesOutPins && emulator.outCount === 0) ? '' : 'none';
+}
+
+function onConfigChange() {
+    updateConfig();
+    updateUI();
+}
+
+cfgOutCount.addEventListener('change', onConfigChange);
+cfgInCount.addEventListener('change', onConfigChange);
+cfgFifoMode.addEventListener('change', onConfigChange);
 cfgOutBase.addEventListener('change', updateConfig);
 cfgSetBase.addEventListener('change', updateConfig);
 cfgSetCount.addEventListener('change', updateConfig);
@@ -365,7 +438,9 @@ btnPushTx.addEventListener('click', () => {
             updateUI();
             txInput.value = '';
         } else {
-            lastTxMessage = 'TX FIFO is full';
+            lastTxMessage = emulator.txCapacity() === 0
+                ? 'TX FIFO is unavailable in this FIFO mode'
+                : 'TX FIFO is full';
             updateUI();
         }
     } else {
@@ -391,6 +466,22 @@ btnPopRx.addEventListener('click', () => {
     const hex = '0x' + (val >>> 0).toString(16).toUpperCase().padStart(8, '0');
     lastRxMessage = `Popped: ${hex}`;
     updateUI();
+});
+
+// In the "get" FIFO mode the system writes the RX FIFO storage registers
+// (RXFx_PUTGETn) and the state machine reads them.
+btnWriteRxReg.addEventListener('click', () => {
+    const val = parseUserNumber(rxRegInput.value);
+    if (isNaN(val)) return;
+    emulator.rxRegs[parseInt(rxRegIndex.value)] = val >>> 0;
+    rxRegInput.value = '';
+    updateUI();
+});
+
+rxRegInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        btnWriteRxReg.click();
+    }
 });
 
 function assembleAndReset() {
@@ -437,6 +528,7 @@ function assembleAndReset() {
         // Clear stale breakpoints when re-assembling; instruction mapping may differ.
         breakpoints.clear();
 
+        applyProgramConfig(program.config);
         updateConfig();
 
         errorMessage.textContent = '';
@@ -447,6 +539,45 @@ function assembleAndReset() {
         console.error(e);
         programDisplay.style.display = 'none';
     }
+}
+
+// Settings named in the source — by directives (.in, .out, .set, .fifo,
+// .mov_status) or by `; #pragma pio_sim config` — are copied into the
+// controls on assemble. Other controls are left alone. A control that the
+// source set last time goes back to its hardware reset value once the line
+// is gone, so a deleted `.fifo tx` does not linger.
+const DIRECTIVE_SETTINGS = {
+    outBase: { reset: 0, apply: v => { cfgOutBase.value = v; } },
+    setBase: { reset: 0, apply: v => { cfgSetBase.value = v; } },
+    sidesetBase: { reset: 0, apply: v => { cfgSidesetBase.value = v; } },
+    inBase: { reset: 0, apply: v => { cfgInBase.value = v; } },
+    jmpPin: { reset: 0, apply: v => { cfgJmpPin.value = v; } },
+    outCount: { reset: 0, apply: v => { cfgOutCount.value = v; } },
+    outShiftDir: { reset: 'right', apply: v => { cfgOutShiftDir.value = v; } },
+    autoPull: { reset: false, apply: v => { cfgAutoPull.checked = v; } },
+    pullThresh: { reset: 32, apply: v => { cfgPullThresh.value = v; } },
+    inCount: { reset: 32, apply: v => { cfgInCount.value = v; } },
+    inShiftDir: { reset: 'right', apply: v => { cfgInShiftDir.value = v; } },
+    autoPush: { reset: false, apply: v => { cfgAutoPush.checked = v; } },
+    pushThresh: { reset: 32, apply: v => { cfgPushThresh.value = v; } },
+    setCount: { reset: 5, apply: v => { cfgSetCount.value = v; } },
+    fifoMode: { reset: 'txrx', apply: v => { cfgFifoMode.value = v; } },
+    statusSel: { reset: 0, apply: v => { cfgStatusSel.value = v; } },
+    statusN: { reset: 0, apply: v => { cfgStatusN.value = v; } }
+};
+let settingsFromDirectives = new Set();
+
+function applyProgramConfig(config) {
+    const now = new Set();
+    for (const key of Object.keys(DIRECTIVE_SETTINGS)) {
+        if (config[key] !== undefined) {
+            DIRECTIVE_SETTINGS[key].apply(config[key]);
+            now.add(key);
+        } else if (settingsFromDirectives.has(key)) {
+            DIRECTIVE_SETTINGS[key].apply(DIRECTIVE_SETTINGS[key].reset);
+        }
+    }
+    settingsFromDirectives = now;
 }
 
 function toggleBreakpoint(pc) {
@@ -577,7 +708,25 @@ function updateUI(isStep = false) {
     regIsrCount.textContent = emulator.isrCount;
 
     txFifoList.innerHTML = emulator.txFifo.map(v => `<li>0x${v.toString(16).toUpperCase()}</li>`).join('');
-    rxFifoList.innerHTML = emulator.rxFifo.map(v => `<li>0x${v.toString(16).toUpperCase()}</li>`).join('');
+
+    // In the put/get FIFO modes the RX FIFO storage is four registers.
+    const fifoMode = emulator.fifoMode;
+    const rxAsRegs = fifoMode === 'txput' || fifoMode === 'txget' || fifoMode === 'putget';
+    rxFifoTitle.textContent = rxAsRegs ? 'RX FIFO registers' : 'RX FIFO';
+    rxPopControls.style.display = rxAsRegs ? 'none' : 'flex';
+    rxRegControls.style.display = fifoMode === 'txget' ? 'flex' : 'none';
+    rxRegNote.style.display = rxAsRegs ? '' : 'none';
+    if (rxAsRegs) {
+        rxRegNote.textContent = {
+            txput: 'Written by the program (mov rxfifo[n], isr), readable by the system.',
+            txget: 'Written by the system, read by the program (mov osr, rxfifo[n]).',
+            putget: 'Read and written by the program only.'
+        }[fifoMode];
+        rxFifoList.innerHTML = emulator.rxRegs
+            .map((v, i) => `<li>[${i}] 0x${(v >>> 0).toString(16).toUpperCase().padStart(8, '0')}</li>`).join('');
+    } else {
+        rxFifoList.innerHTML = emulator.rxFifo.map(v => `<li>0x${v.toString(16).toUpperCase()}</li>`).join('');
+    }
     txPushResult.textContent = lastTxMessage;
     rxPopResult.textContent = lastRxMessage;
 
@@ -589,6 +738,8 @@ function updateUI(isStep = false) {
     const ff2 = emulator.inputsFf2 >>> 0;
     gpioFf1HexVal.textContent = '0x' + ff1.toString(16).toUpperCase().padStart(8, '0');
     gpioFf2HexVal.textContent = '0x' + ff2.toString(16).toUpperCase().padStart(8, '0');
+    const seen = emulator.inputsSeen >>> 0;
+    gpioSeenHexVal.textContent = '0x' + seen.toString(16).toUpperCase().padStart(8, '0');
     // FF stages are dead weight when every pin bypasses the synchronizer.
     const ffVisible = bypassMask !== 0xFFFFFFFF ? '' : 'none';
     gpioFf1Row.style.display = ffVisible;
@@ -611,18 +762,16 @@ function updateUI(isStep = false) {
         // Mark pins driven by a `#pragma pio_sim` waveform.
         if (stim) bit.classList.add('stim');
 
-        const ff2Bit = (ff2 >> i) & 1;
-        const syncNote = isOut
-            ? ''
-            : (bypass
-                ? ' [SYNC BYPASSED]'
-                : ` [SYNC ENGAGED — PIO sees ${ff2Bit}]`);
+        // Outputs are read back through the same input path as inputs.
+        const seenBit = (seen >> i) & 1;
+        const syncNote = ` [PIO sees ${seenBit}; SYNC ${bypass ? 'BYPASSED' : 'ENGAGED'}]`;
         const stimNote = stim
             ? (isOut ? ' [STIMULUS — ignored while Output]' : ' [STIMULUS]')
             : '';
         bit.title = `GPIO ${i}: ${isOut ? 'Output' : 'Input'} = ${val}${syncNote}${stimNote}`;
     }
 
+    const irqEventMask = emulator.irqEventMask();
     for (let i = 0; i < 8; i++) {
         const flag = document.getElementById(`irq-flag-${i}`);
         if ((emulator.irq >> i) & 1) {
@@ -630,6 +779,10 @@ function updateUI(isStep = false) {
         } else {
             flag.classList.remove('active');
         }
+        // Mark flags scheduled by a `#pragma pio_sim irq` line.
+        const scheduled = (irqEventMask >> i) & 1;
+        flag.classList.toggle('scheduled', scheduled === 1);
+        flag.title = scheduled ? `IRQ ${i}: set/cleared by #pragma pio_sim irq` : `IRQ ${i}`;
     }
 
     const activeLines = programDisplay.querySelectorAll('.program-line.active');
@@ -681,6 +834,22 @@ function drawTimingChart() {
     pinsToShow.sort((a, b) => a - b);
     pinsToShow = [...new Set(pinsToShow)];
 
+    // One-bit rows: the GPIOs, then any IRQ flag scheduled by a pragma.
+    const bitRows = pinsToShow.map(pin => ({
+        label: `GPIO ${pin}${isStimPin(pin) ? ' (stim)' : ''}`,
+        key: isStimPin(pin) ? 'inputs' : 'pins',
+        bit: pin,
+        color: isStimPin(pin) ? '#ef6c00' : '#007acc'
+    }));
+    const irqEventMask = emulator.irqEventMask();
+    const irqsToShow = [];
+    for (let i = 0; i < 8; i++) {
+        if ((irqEventMask >> i) & 1) {
+            irqsToShow.push(i);
+            bitRows.push({ label: `IRQ ${i}`, key: 'irq', bit: i, color: '#7b1fa2' });
+        }
+    }
+
     const regsToShow = TIMING_REGS.filter(r => selectedTimingRegs.has(r.key));
 
     if (pinsToShow.length > 0) {
@@ -692,6 +861,9 @@ function drawTimingChart() {
         } else {
             titleStr = `GPIO ${pinsToShow.join(',')}`;
         }
+        if (irqsToShow.length > 0) {
+            titleStr += ` + IRQ ${irqsToShow.join(',')}`;
+        }
         if (regsToShow.length > 0) {
             titleStr += ` + ${regsToShow.map(r => r.label).join(', ')}`;
         }
@@ -700,7 +872,7 @@ function drawTimingChart() {
         timingChartTitle.textContent = `Timing Chart (${regsToShow.map(r => r.label).join(', ')})`;
     }
 
-    const numPins = pinsToShow.length;
+    const numPins = bitRows.length;
     const numRegs = regsToShow.length;
     const totalRows = numPins + numRegs;
 
@@ -723,7 +895,14 @@ function drawTimingChart() {
     const startIndex = Math.max(0, history.length - maxCycles);
     const visibleHistory = history.slice(startIndex);
 
-    const stepX = width / maxCycles;
+    // Row labels get their own gutter on the left, so they never cover the
+    // first clocks of a waveform. Everything below is drawn in plot
+    // coordinates: x = 0 is the left edge of the plot area.
+    const LABEL_W = 104;
+    const plotW = width - LABEL_W;
+    const stepX = plotW / maxCycles;
+    ctx.save();
+    ctx.translate(LABEL_W, 0);
 
     const pinAreaHeight = numPins > 0 ? (height * numPins) / totalRows : 0;
     const regAreaHeight = height - pinAreaHeight;
@@ -749,17 +928,17 @@ function drawTimingChart() {
         const yCenter = i * pinRowHeight + pinRowHeight / 2;
         ctx.beginPath();
         ctx.moveTo(0, yCenter);
-        ctx.lineTo(width, yCenter);
+        ctx.lineTo(plotW, yCenter);
         ctx.stroke();
     }
 
     ctx.lineWidth = 2;
 
     for (let i = 0; i < numPins; i++) {
-        const pin = pinsToShow[i];
-        const key = isStimPin(pin) ? 'inputs' : 'pins';
+        const pin = bitRows[i].bit;
+        const key = bitRows[i].key;
         const yCenter = i * pinRowHeight + pinRowHeight / 2;
-        ctx.strokeStyle = isStimPin(pin) ? '#ef6c00' : '#007acc';
+        ctx.strokeStyle = bitRows[i].color;
         ctx.beginPath();
         for (let t = 0; t < visibleHistory.length; t++) {
             const state = (visibleHistory[t][key] >> pin) & 1;
@@ -781,13 +960,10 @@ function drawTimingChart() {
 
     ctx.font = '12px Consolas';
     for (let i = 0; i < numPins; i++) {
-        const label = `GPIO ${pinsToShow[i]}${isStimPin(pinsToShow[i]) ? ' (stim)' : ''}`;
-        const yBaseline = i * pinRowHeight + 15;
-        const tw = ctx.measureText(label).width;
-        ctx.fillStyle = '#fff';
-        ctx.fillRect(3, yBaseline - 11, tw + 4, 14);
+        const label = bitRows[i].label;
+        const yBaseline = i * pinRowHeight + pinRowHeight / 2 + 4;
         ctx.fillStyle = '#000';
-        ctx.fillText(label, 5, yBaseline);
+        ctx.fillText(label, 5 - LABEL_W, yBaseline);
     }
 
     for (let i = 0; i < numRegs; i++) {
@@ -797,7 +973,6 @@ function drawTimingChart() {
         const yMid = (yTop + yBot) / 2;
 
         ctx.font = '12px Consolas';
-        const labelOffsetX = ctx.measureText(reg.label).width + 12;
 
         ctx.strokeStyle = '#c2185b';
         ctx.lineWidth = 1.5;
@@ -829,7 +1004,7 @@ function drawTimingChart() {
             const text = reg.format(visibleHistory[segStart][reg.key]);
             const segWidth = xEnd - xStart;
             const segHeight = yBot - yTop;
-            const visStart = (segStart === 0) ? Math.max(xStart, labelOffsetX) : xStart;
+            const visStart = xStart;
             const visWidth = xEnd - visStart;
 
             ctx.font = '12px Consolas';
@@ -873,13 +1048,19 @@ function drawTimingChart() {
         }
 
         ctx.font = '12px Consolas';
-        const tw = ctx.measureText(reg.label).width;
-        const yBaseline = yTop + 12;
-        ctx.fillStyle = '#fff';
-        ctx.fillRect(3, yBaseline - 11, tw + 4, 14);
         ctx.fillStyle = '#000';
-        ctx.fillText(reg.label, 5, yBaseline);
+        ctx.fillText(reg.label, 5 - LABEL_W, yMid + 4);
     }
+
+    // Left edge of the plot area.
+    ctx.strokeStyle = '#999';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(0, height);
+    ctx.stroke();
+
+    ctx.restore();
 }
 
 // Restore code from localStorage (if any) before initial assemble.

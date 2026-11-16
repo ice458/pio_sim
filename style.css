@@ -249,6 +249,21 @@ button:disabled {
     color: #c2185b;
 }
 
+.sync-seen-row {
+    font-size: 0.85em;
+    color: #555;
+}
+
+.config-hint {
+    width: 100%;
+    font-size: 0.8em;
+    color: #b45309;
+    background-color: #fff7e6;
+    border-left: 3px solid #ef6c00;
+    padding: 4px 8px;
+    box-sizing: border-box;
+}
+
 .sync-mode-row {
     margin-top: 8px;
     display: flex;
@@ -342,6 +357,11 @@ button:disabled {
 
 .irq-flag:hover {
     background-color: #e0e0e0;
+}
+
+/* Flag scheduled by a `#pragma pio_sim irq` line */
+.irq-flag.scheduled {
+    box-shadow: inset 0 -3px 0 #7b1fa2;
 }
 
 .irq-flag.active {
