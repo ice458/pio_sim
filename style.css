@@ -345,19 +345,37 @@ button:disabled {
     border-radius: 4px;
 }
 
+/* One slot per FIFO entry, filled or not, so the panel keeps its height
+   while words come and go. */
 .fifo-box ul {
     list-style: none;
     padding: 0;
     margin: 10px 0 0 0;
-    max-height: 100px;
-    overflow-y: auto;
     font-family: 'Consolas', monospace;
 }
 
 .fifo-box li {
     background-color: #eef;
+    border: 1px solid transparent;
     margin-bottom: 2px;
     padding: 2px 5px;
+    height: 1.3em;
+    line-height: 1.3em;
+}
+
+.fifo-box li.empty {
+    background-color: transparent;
+    border: 1px dashed #ddd;
+}
+
+/* Push / Pop results: one line, whatever the message. */
+#tx-push-result,
+#rx-pop-result {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 #timing-chart {
@@ -695,6 +713,10 @@ button:disabled {
 /* State machine summary and tabs */
 .sm-summary {
     width: 100%;
+    /* Fixed columns: a long instruction must not shift the others while
+       running. Anything too long is cut with an ellipsis (full text in the
+       cell's title). */
+    table-layout: fixed;
     border-collapse: collapse;
     font-family: 'Consolas', 'Monaco', monospace;
     font-size: 13px;
@@ -707,6 +729,8 @@ button:disabled {
     padding: 3px 6px;
     text-align: left;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .sm-summary th {
@@ -731,11 +755,6 @@ button:disabled {
     color: #aaa;
 }
 
-.sm-summary td.instr {
-    max-width: 220px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
 
 .sm-status {
     display: inline-block;
@@ -831,4 +850,7 @@ button:disabled {
     color: #555;
     margin-top: 6px;
     word-break: break-word;
+    /* Room for the longest list, so the panel does not grow as it fills. */
+    line-height: 1.4em;
+    min-height: 4.2em;
 }

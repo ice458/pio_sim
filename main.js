@@ -36,6 +36,19 @@ const rxFifoTitle = document.getElementById('rx-fifo-title');
 const txFeedNote = document.getElementById('tx-feed-note');
 const rxDrainNote = document.getElementById('rx-drain-note');
 
+// A FIFO as one slot per entry, oldest first: the words in it, then empty
+// slots up to its depth. The slots are kept and only their text changes.
+function setFifoSlots(list, words, capacity) {
+    while (list.children.length < capacity) list.appendChild(document.createElement('li'));
+    while (list.children.length > capacity) list.lastChild.remove();
+    for (let i = 0; i < capacity; i++) {
+        const li = list.children[i];
+        const text = i < words.length ? `0x${(words[i] >>> 0).toString(16).toUpperCase()}` : '';
+        if (li.textContent !== text) li.textContent = text;
+        li.classList.toggle('empty', i >= words.length);
+    }
+}
+
 // A word read from a FIFO, with its character when it is one.
 function feedWordText(v) {
     const hex = '0x' + (v >>> 0).toString(16).toUpperCase();
@@ -1093,6 +1106,7 @@ function updateSmPanels() {
             ? [`SM${i}`, sm.program ? sm.program.name : '', null, sm.pc, instrText(sm.pc), hex8(sm.x), hex8(sm.y), sm.cycles]
             : [`SM${i}`, '', null, '', '', '', '', ''];
         values.forEach((v, k) => { if (k !== 2) setText(row.cells[k], v); });
+        row.cells[1].title = values[1];
         row.cells[4].title = values[4];
         row.status.className = `sm-status ${status}`;
         setText(row.status, status.toUpperCase());
@@ -1147,7 +1161,7 @@ function updateUI(isStep = false) {
     regIsr.textContent = hex8(sm.isr);
     regIsrCount.textContent = sm.isrCount;
 
-    txFifoList.innerHTML = sm.txFifo.map(v => `<li>0x${v.toString(16).toUpperCase()}</li>`).join('');
+    setFifoSlots(txFifoList, sm.txFifo, sm.txCapacity());
     // `; #pragma pio_sim tx` / `rx drain`: where the feed is, what was read.
     const feed = sm.feed;
     txFeedNote.style.display = feed.tx.length ? '' : 'none';
@@ -1158,7 +1172,7 @@ function updateUI(isStep = false) {
     }
     rxDrainNote.style.display = feed.rxDrain ? '' : 'none';
     if (feed.rxDrain) {
-        const last = sm.drained.slice(-16);
+        const last = sm.drained.slice(-8);
         rxDrainNote.textContent = `Read by '#pragma pio_sim rx drain' (${sm.drained.length}${sm.drained.length >= 256 ? '+' : ''}), latest last: ` +
             (last.length ? last.map(feedWordText).join(' ') : 'nothing yet');
     }
@@ -1179,7 +1193,7 @@ function updateUI(isStep = false) {
         rxFifoList.innerHTML = sm.rxRegs
             .map((v, i) => `<li>[${i}] 0x${(v >>> 0).toString(16).toUpperCase().padStart(8, '0')}</li>`).join('');
     } else {
-        rxFifoList.innerHTML = sm.rxFifo.map(v => `<li>0x${v.toString(16).toUpperCase()}</li>`).join('');
+        setFifoSlots(rxFifoList, sm.rxFifo, sm.rxCapacity());
     }
     txPushResult.textContent = lastTxMessage;
     rxPopResult.textContent = lastRxMessage;
