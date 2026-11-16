@@ -156,7 +156,7 @@
             </details>
 
             <details style="font-size: 0.85em; color: #777; margin-top: 4px; line-height: 1.7;">
-                <summary style="cursor: pointer;">Simulator pragmas (<code>#pragma pio_sim</code>): pin waveforms, IRQ events, settings, state machines</summary>
+                <summary style="cursor: pointer;">Simulator pragmas (<code>#pragma pio_sim</code>): pin waveforms, IRQ events, FIFO data, settings, state machines</summary>
                 <p style="margin: 8px 0 0 0;">
                     Comment lines starting with <code>; #pragma pio_sim</code> set up the simulation from the source.
                     <code>pioasm</code> ignores them, so they can stay in your real code and are saved with it.
@@ -177,6 +177,17 @@
                 <p style="margin: 0;">
                     <code>irq set|clear &lt;n&gt; [delay &lt;clocks&gt;] [repeat &lt;clocks&gt;] [count &lt;n&gt;]</code>.
                     The instruction executed on that clock already sees the new value; a real partner's <code>irq</code> on cycle N is seen at N+1, so use <code>delay N+1</code>. The program can still set and clear the flag itself.
+                </p>
+                <p style="margin: 8px 0 0 0;"><strong>FIFO data</strong>: keep the TX FIFO supplied and the RX FIFO read, as DMA would.</p>
+                <pre style="margin: 4px 0; padding: 6px 8px; background: #f5f5f5; overflow-x: auto;">; #pragma pio_sim tx 7 1 1 3 3                     ; these words, then nothing
+; #pragma pio_sim tx 0xF0F000FF 0x80017FFE loop    ; these words over and over
+; #pragma pio_sim tx "Hi!\n"                       ; one word per character
+; #pragma pio_sim rx drain                         ; read every word pushed</pre>
+                <p style="margin: 0;">
+                    <code>tx [sm &lt;n&gt;] &lt;word|"text"&gt; ... [loop]</code>: the TX FIFO is topped up before every step; several lines add up, <code>loop</code> starts over at the end.
+                    Text escapes: <code>\n \r \t \0 \\ \" \xNN</code> (<code>;</code> or <code>//</code> ends the pragma: write <code>\x3B</code>, <code>\x2F</code>).
+                    <code>rx [sm &lt;n&gt;] drain</code>: the RX FIFO is emptied after every step; the words read are listed under it.
+                    Scope as for <code>config</code>.
                 </p>
                 <p style="margin: 8px 0 0 0;"><strong>Settings</strong>: load the controls below on Assemble.</p>
                 <pre style="margin: 4px 0; padding: 6px 8px; background: #f5f5f5; overflow-x: auto;">; #pragma pio_sim config out_base 0 out_count 2 set_base 0 sideset_base 4
@@ -217,13 +228,6 @@
                     <label>Load Example:</label>
                     <select id="example-select">
                         <option value="">-- Select Example --</option>
-                        <option value="blink">Simple Blink</option>
-                        <option value="pwm">PWM (LED Fade)</option>
-                        <option value="feature_test">Feature Test (Wait/Jmp Pin)</option>
-                        <option value="stimulus">Input Stimulus (#pragma pio_sim)</option>
-                        <option value="irq_handshake">IRQ Handshake (#pragma pio_sim irq)</option>
-                        <option value="pingpong">Ping-Pong (2 state machines)</option>
-                        <option value="shared_program">One program on 3 state machines (irq rel)</option>
                     </select>
                     <label style="margin-left: 12px;" title="Whose timing to follow. The chips differ in how fast JMP PIN sees a pin (measured). A '; #pragma pio_sim chip rp2040' line in the source sets this on Assemble.">Chip:</label>
                     <select id="cfg-chip">
@@ -424,6 +428,7 @@
                             <span id="tx-push-result" style="font-size: 0.9em; color: #555;"></span>
                         </div>
                         <ul id="tx-fifo-list"></ul>
+                        <div id="tx-feed-note" class="feed-note" style="display: none;"></div>
                     </div>
                     <div class="fifo-box">
                         <h4 id="rx-fifo-title">RX FIFO</h4>
@@ -445,6 +450,7 @@
                         </div>
                         <div id="rx-reg-note" style="font-size: 0.8em; color: #666; margin-bottom: 6px; display: none;"></div>
                         <ul id="rx-fifo-list"></ul>
+                        <div id="rx-drain-note" class="feed-note" style="display: none;"></div>
                     </div>
                 </div>
                 </div>
@@ -502,7 +508,14 @@
                     </div>
                 </div>
 
-                <h3><span id="timing-chart-title">Timing Chart (GPIO 0-3)</span> <span class="shared-tag multi-sm-only">shared</span></h3>
+                <h3><span id="timing-chart-title">Timing Chart (GPIO 0-3)</span> <span class="shared-tag multi-sm-only">shared</span>
+                    <label class="chart-span" title="How many of the latest clocks the chart shows">Show
+                        <select id="timing-span">
+                            <option value="50" selected>50</option>
+                            <option value="100">100</option>
+                            <option value="200">200</option>
+                            <option value="500">500</option>
+                        </select> clocks</label></h3>
                 <canvas id="timing-chart" width="600" height="200"></canvas>
                 <div class="chart-legend">
                     <span><i class="lg-line lg-driven"></i>driven by PIO (output)</span>

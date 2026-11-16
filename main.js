@@ -33,6 +33,17 @@ const btnPopRx = document.getElementById('btn-pop-rx');
 const rxPopResult = document.getElementById('rx-pop-result');
 
 const rxFifoTitle = document.getElementById('rx-fifo-title');
+const txFeedNote = document.getElementById('tx-feed-note');
+const rxDrainNote = document.getElementById('rx-drain-note');
+
+// A word read from a FIFO, with its character when it is one.
+function feedWordText(v) {
+    const hex = '0x' + (v >>> 0).toString(16).toUpperCase();
+    const named = { 9: '\\t', 10: '\\n', 13: '\\r' };
+    if (named[v]) return `${hex} '${named[v]}'`;
+    if (v >= 0x20 && v < 0x7f) return `${hex} '${String.fromCharCode(v)}'`;
+    return hex;
+}
 const rxPopControls = document.getElementById('rx-pop-controls');
 const rxRegControls = document.getElementById('rx-reg-controls');
 const rxRegIndex = document.getElementById('rx-reg-index');
@@ -129,6 +140,7 @@ const timingIrqSelector = document.getElementById('timing-irq-selector');
 const timingIrqOverride = new Map();    // flag -> shown
 const timingIrqButtons = [];
 let timingCursorX = null;   // mouse x on the timing chart, in canvas pixels
+const timingSpan = document.getElementById('timing-span');
 
 const TIMING_REGS = [
     { key: 'pc',  label: 'PC',  format: v => v.toString() },
@@ -256,6 +268,10 @@ for (let i = 0; i < 8; i++) {
     timingIrqButtons.push(btn);
 }
 
+timingSpan.addEventListener('change', () => drawTimingChart());
+// The canvas matches its shown width, which follows the window.
+window.addEventListener('resize', () => drawTimingChart());
+
 btnAssemble.addEventListener('click', assembleAndReset);
 btnStep.addEventListener('click', step);
 btnRunStop.addEventListener('click', toggleRunStop);
@@ -277,143 +293,319 @@ document.getElementById('run-speed').addEventListener('change', () => {
     }
 });
 
+// Examples. Each one carries its settings in '; #pragma pio_sim' lines, so
+// it runs the same when pasted in. `group` and `label` build the menu.
 const examples = {
     blink: {
-        code: `.program blink
+        group: 'Basics', label: 'Blink (set, delay)',
+        code: `; Blink: toggle GPIO 0 with SET.
+; [n] after an instruction waits n more cycles, so each level lasts
+; 1 + 3 = 4 cycles. At the end, .wrap goes back to .wrap_target without
+; spending a cycle on a jmp.
+;
+; Settings a C program would make with sm_config_set_set_pins():
+; #pragma pio_sim config set_base 0 set_count 1
 
-    set pindirs, 1   ; GPIO 0 as an output
+.program blink
+    set pindirs, 1      ; GPIO 0 as an output (pins start as inputs)
 .wrap_target
-    set pins, 1      ; Turn on
-    set pins, 0      ; Turn off
-.wrap`,
-        config: {
-            outBase: 0, setBase: 0, sidesetBase: 0, inBase: 0, jmpPin: 0,
-            inShiftDir: 'right', outShiftDir: 'right',
-            autoPush: false, pushThresh: 32, autoPull: false, pullThresh: 32
-        }
+    set pins, 1 [3]     ; high for 4 cycles
+    set pins, 0 [3]     ; low for 4 cycles
+.wrap`
     },
     pwm: {
-        code: `.program pwm
+        group: 'Basics', label: 'PWM (side-set, FIFO)',
+        code: `; PWM on GPIO 0, the level coming from the TX FIFO.
+; ISR holds the period, set once at the start. Each PWM period, Y counts
+; down from the period to 0; the pin goes high when Y reaches the level
+; in X and stays high to the end. So it is high for level + 1 of every
+; period + 1 counts. Side-set drives the pin without a cycle of its own.
+;
+; pull noblock with an empty FIFO copies X to the OSR, so the last level
+; stays until a new one arrives.
+;
+; #pragma pio_sim config sideset_base 0 set_base 0 set_count 1
+; The TX FIFO, as a C program or DMA would fill it: the period (7),
+; then levels 1, 3 and 6 for two PWM periods each.
+; #pragma pio_sim tx 7  1 1  3 3  6 6
+
+.program pwm
 .side_set 1 opt
-
-; Setup: GPIO 0 (side-set) as an output, load Period into ISR
-    set pindirs, 1         ; GPIO 0 as an output
-    pull block      ; 1. Push Period (e.g. 8) to TX FIFO
-    out isr, 32     ; 2. ISR = Period
-
+    set pindirs, 1          ; GPIO 0 as an output
+    pull block              ; the period from the FIFO ...
+    out isr, 32             ; ... kept in ISR
 .wrap_target
-    pull noblock    side 0 ; Pull Level (e.g. 0 to 7) from FIFO (if empty, use X)
-    mov x, osr             ; X = Level
-    mov y, isr             ; Y = Period (Counter)
-countloop:
-    jmp x!=y noset         ; If Counter == Level, set Pin High
-    jmp skip        side 1 ; Side-set 1 (High)
-noset:
-    nop                    ; Balance delay
+    pull noblock    side 0  ; next level (or keep the last), pin low
+    mov x, osr              ; X = level
+    mov y, isr              ; Y = period
+count:
+    jmp x!=y skip           ; Y not at the level: pin unchanged
+    jmp counted     side 1  ; Y reached the level: pin high
 skip:
-    jmp y-- countloop      ; Loop until Y=0
-.wrap`,
-        config: {
-            outBase: 0, setBase: 0, sidesetBase: 0, inBase: 0, jmpPin: 0,
-            inShiftDir: 'right', outShiftDir: 'right',
-            autoPush: false, pushThresh: 32, autoPull: false, pullThresh: 32
-        }
-    },
-    feature_test: {
-        code: `.program feature_test
-.side_set 1 opt
-
-; Simulator settings, loaded on Assemble (plain comments for pioasm):
-; #pragma pio_sim config out_base 0 out_count 2 set_base 0
-; #pragma pio_sim config sideset_base 4 in_base 0 jmp_pin 5 in_shift left
-; Click GPIO 5 to drive the input.
-
-    set pindirs, 3      side 0 ; Set GPIO 0,1 as Output
-    
-loop:
-    pull block          side 0 ; Wait for TX FIFO
-    out pins, 2         side 1 ; Output 2 bits to GPIO 0,1. Side-set GPIO 4 High.
-    
-    wait 1 pin 5        side 0 ; Wait for GPIO 5 (Input) High. Side-set Low.
-    
-    in pins, 6          side 1 ; Read GPIO 0-5.
-    push noblock        side 0 ; Push to RX FIFO.
-    
-    irq 0               side 1 ; Trigger IRQ 0.
-    
-    jmp pin is_high     side 0 ; Jump if GPIO 5 is High (it should be, passed wait)
-    jmp loop            side 0
-
-is_high:
-    set pins, 0         side 1 ; Turn off GPIO 0,1
-    jmp loop            side 0`,
-        config: {
-            outBase: 0, outCount: 2, setBase: 0, sidesetBase: 4, inBase: 0, jmpPin: 5,
-            inShiftDir: 'left', outShiftDir: 'right',
-            autoPush: false, pushThresh: 32, autoPull: false, pullThresh: 32
-        }
+    nop                     ; same 2 cycles as the other path
+counted:
+    jmp y-- count           ; until Y passes 0
+.wrap`
     },
     stimulus: {
-        code: `.program stimulus
-
-; Input waveforms for the simulator (plain comments for pioasm).
-; pin <n> [<hi|low> delay <clocks>] <hi|low> <clocks> ... [count <n>]
+        group: 'Basics', label: 'Input waveform (#pragma pio_sim pin)',
+        code: `; Copy GPIO 5 to GPIO 0, with GPIO 5 driven by a test waveform.
+; A pin pragma plays a signal from outside the chip, in system clocks:
+;   pin <n> [<hi|low> delay <clocks>] <hi|low> <clocks> ... [count <n>]
 ;
 ; GPIO 5: low 7 clocks, high 3, repeating forever
 ; #pragma pio_sim pin 5 low 7 hi 3
-; GPIO 4: low for 12 clocks, then 3 pulses
-; #pragma pio_sim pin 4 low delay 12 hi 1 low 9 count 3
+;
+; wait ... pin counts from in_base; set from set_base.
+; #pragma pio_sim config set_base 0 set_count 1 in_base 5
 
-; Simulator settings, loaded on Assemble:
-; #pragma pio_sim config set_base 0 set_count 1 in_base 0
-
+.program follow
     set pindirs, 1  ; GPIO 0 as an output
 .wrap_target
-    wait 1 pin 5    ; Wait for GPIO 5 High
-    set pins, 1     ; Copy it to GPIO 0
-    wait 0 pin 5    ; Wait for GPIO 5 Low
+    wait 1 pin 0    ; wait for GPIO 5 (in_base + 0) to go high
+    set pins, 1     ; copy it to GPIO 0
+    wait 0 pin 0    ; and low again
     set pins, 0
-.wrap`,
-        config: {
-            outBase: 0, setBase: 0, sidesetBase: 0, inBase: 0, jmpPin: 0,
-            inShiftDir: 'right', outShiftDir: 'right',
-            autoPush: false, pushThresh: 32, autoPull: false, pullThresh: 32
-        }
+.wrap
+
+; GPIO 0 follows a few clocks late: an input passes the 2-flipflop
+; synchroniser, and a pin write reaches the pad on the next clock.
+; Alt+click GPIO 5 in the GPIO panel to bypass its synchroniser.`
+    },
+    pulse_width: {
+        group: 'Basics', label: 'Pulse width meter (wait, jmp pin)',
+        code: `; Measure how long each high pulse on GPIO 2 lasts and push the result.
+; GPIO 0 is high while a pulse is being measured.
+;
+; X counts down from 0xFFFFFFFF once per 2-cycle loop while the pin is
+; high, so ~X is the number of loops. The results, 1, 4 and 9 loops, are
+; about half of each width less the few clocks spent seeing the edge.
+;
+; GPIO 2: pulses of 4, 10 and 20 clocks, 8 clocks apart.
+; #pragma pio_sim pin 2 low delay 6 hi 4 low 8 hi 10 low 8 hi 20 low 8 count 1
+; #pragma pio_sim config set_base 0 set_count 1 in_base 2 jmp_pin 2
+; Read the RX FIFO as DMA would; the results show under RX FIFO.
+; #pragma pio_sim rx drain
+
+.program pulse_width
+    set pindirs, 1      ; GPIO 0 as an output
+.wrap_target
+    wait 1 pin 0        ; rising edge on GPIO 2 (in_base + 0)
+    set pins, 1         ; GPIO 0 high: measuring
+    mov x, ~null        ; X = 0xFFFFFFFF
+high:
+    jmp x-- still       ; count one loop (always goes on to 'still')
+still:
+    jmp pin high        ; GPIO 2 (jmp_pin) still high: loop again
+    set pins, 0         ; pulse over
+    mov isr, ~x         ; ISR = loops counted
+    push noblock        ; report it
+.wrap`
+    },
+    uart: {
+        group: 'Protocols', label: 'UART TX and RX (8N1)',
+        code: `; UART, 8 data bits, no parity, 1 stop bit, LSB first.
+; SM0 sends on GPIO 0; SM1 listens to the same pin and receives it back.
+; One bit is 8 state machine cycles, so baud = sysclk / (8 * clkdiv):
+; 150 MHz / (8 * 162.76) = 115200 baud.
+;
+; #pragma pio_sim config clkdiv 162.76
+
+.program uart_tx
+; #pragma pio_sim config set_base 0 set_count 1 out_base 0 out_count 1
+; Bytes to send, as a C program or DMA would write them:
+; #pragma pio_sim tx "Hi!\\n"
+    set pindirs, 1          ; GPIO 0 as an output
+    set pins, 1             ; the line idles high
+.wrap_target
+    pull block              ; wait for a byte
+    set x, 7                ; 8 data bits
+    set pins, 0     [7]     ; start bit: low for 8 cycles
+bit:
+    out pins, 1     [6]     ; next bit, LSB first (out_shift right) ...
+    jmp x-- bit             ; ... 1 + 6 + 1 = 8 cycles each
+    set pins, 1     [7]     ; stop bit: high for 8 cycles (or more)
+.wrap
+
+.program uart_rx
+; #pragma pio_sim config in_base 0 jmp_pin 0
+; #pragma pio_sim rx drain
+    wait 1 pin 0            ; let the line go idle (high) first
+.wrap_target
+start:
+    wait 0 pin 0            ; the falling edge of a start bit
+    set x, 7        [10]    ; on to the middle of bit 0: the start bit
+                            ; (8 cycles) and half a bit (4), the wait's
+                            ; input delay included
+bit:
+    in pins, 1              ; sample a bit; ISR shifts right
+    jmp x-- bit     [6]     ; 8 cycles a bit
+    jmp pin ok              ; the stop bit must be high
+    wait 1 pin 0            ; framing error: drop the byte, wait for idle
+    jmp start
+ok:
+    in null, 24             ; move the byte from bits 31-24 to 7-0
+    push                    ; the received byte (shown under RX FIFO)
+.wrap`
+    },
+    spi: {
+        group: 'Protocols', label: 'SPI controller (mode 0)',
+        code: `; SPI controller, mode 0 (CPOL 0, CPHA 0), 8-bit, MSB first.
+; MOSI = GPIO 0, SCK = GPIO 1, MISO = GPIO 2.
+; Data changes while SCK is low and is sampled on the rising edge; both
+; sides sample at once, so every byte sent also receives one.
+; The same two-instruction loop as spi.pio in pico-examples.
+;
+; Autopull and autopush every 8 bits; the loop never pulls or pushes
+; itself. With nothing to send, OUT stalls and SCK stays low.
+; #pragma pio_sim config out_base 0 out_count 1 sideset_base 1 in_base 2
+; #pragma pio_sim config set_base 0 set_count 2
+; #pragma pio_sim config out_shift left autopull on pull_thresh 8
+; #pragma pio_sim config in_shift left autopush on push_thresh 8
+;
+; Shifting left sends bits 31, 30, ... first, so a byte goes in the top 8
+; bits. (A C program writes the byte with an 8-bit store, which puts it
+; in every byte of the word.)
+; #pragma pio_sim tx 0xA5000000 0x3C000000
+; #pragma pio_sim rx drain
+;
+; MISO: a device answering 0xC3 (1100 0011), 4 clocks a bit.
+; #pragma pio_sim pin 2 hi 8 low 16 hi 8
+
+.program spi_mode0
+.side_set 1
+    set pindirs, 3      side 0  ; GPIO 0 and 1 as outputs (set_base 0)
+.wrap_target
+    out pins, 1         side 0 [1]  ; next bit on MOSI, SCK low
+    in pins, 1          side 1 [1]  ; SCK high: sample MISO
+.wrap`
+    },
+    i2s: {
+        group: 'Protocols', label: 'I2S audio out (16-bit stereo)',
+        code: `; I2S output, 16-bit stereo. DATA = GPIO 0, BCLK = GPIO 1,
+; LRCLK = GPIO 2 (low: left channel, high: right).
+; Each 32-bit FIFO word is one frame: left sample in the top 16 bits,
+; right in the bottom 16, MSB first. As I2S requires, LRCLK changes one
+; BCLK before a channel's first bit: the last bit of each channel goes
+; out with LRCLK already showing the next one.
+; The same loop structure as audio_i2s.pio in pico-extras.
+;
+; 2 cycles per bit, 64 per frame: sample rate = sysclk / (64 * clkdiv).
+; #pragma pio_sim config out_base 0 out_count 1 set_base 0 set_count 3 sideset_base 1
+; #pragma pio_sim config out_shift left autopull on pull_thresh 32
+;
+; Frames: (left 0xF0F0, right 0x00FF), then (0x8001, 0x7FFE), repeated.
+; #pragma pio_sim tx 0xF0F000FF 0x80017FFE loop
+
+.program i2s_out
+.side_set 2                         ; bit 1 = LRCLK, bit 0 = BCLK
+    set pindirs, 7      side 0b01   ; GPIO 0-2 as outputs
+    set x, 14           side 0b01   ; 15 bits in the loop + 1 after it
+.wrap_target
+left_bits:
+    out pins, 1         side 0b00   ; left bit on DATA, BCLK low
+    jmp x-- left_bits   side 0b01   ; BCLK high: the receiver samples
+    out pins, 1         side 0b10   ; last left bit; LRCLK goes high
+    set x, 14           side 0b11
+right_bits:
+    out pins, 1         side 0b10   ; right bit
+    jmp x-- right_bits  side 0b11
+    out pins, 1         side 0b00   ; last right bit; LRCLK goes low
+    set x, 14           side 0b01
+.wrap`
+    },
+    ws2812: {
+        group: 'Protocols', label: 'WS2812 / NeoPixel LEDs',
+        code: `; WS2812(B) LEDs ("NeoPixel") on GPIO 0, one wire.
+; Every bit is a 10-cycle high/low pulse: a long high for 1, a short one
+; for 0. At 800 kHz that is 8 MHz, clkdiv 150 / 8 = 18.75 on an RP2350
+; (125 / 8 = 15.625 on an RP2040).
+;   1: high 7 cycles, low 3      0: high 3 cycles, low 7
+; Built like ws2812.pio in pico-examples.
+;
+; Colours are 24 bits in green, red, blue order, sent MSB first; a word
+; holds one LED in its top 24 bits (0xGGRRBB00). When the FIFO runs dry,
+; OUT stalls with the line low, which latches the colours.
+; #pragma pio_sim config sideset_base 0 set_base 0 set_count 1 clkdiv 18.75
+; #pragma pio_sim config out_shift left autopull on pull_thresh 24
+; LED 0 red, LED 1 green, LED 2 blue (half brightness):
+; #pragma pio_sim tx 0x00FF0000 0xFF000000 0x00008000
+
+.program ws2812
+.side_set 1
+.define T1 3                        ; high, every bit
+.define T2 4                        ; high for a 1, low for a 0
+.define T3 3                        ; low, every bit
+    set pindirs, 1      side 0      ; GPIO 0 as an output
+.wrap_target
+bitloop:
+    out x, 1            side 0 [T3 - 1] ; next bit; the line low
+    jmp !x do_zero      side 1 [T1 - 1] ; line high
+do_one:
+    jmp bitloop         side 1 [T2 - 1] ; a 1: stay high
+do_zero:
+    nop                 side 0 [T2 - 1] ; a 0: go low
+.wrap`
+    },
+    irq_handshake: {
+        group: 'IRQ and several state machines', label: 'IRQ handshake (#pragma pio_sim irq)',
+        code: `; One side of a handshake between two state machines, the other side
+; played by IRQ pragmas. Use this to test a program on its own before
+; its partner exists.
+;   irq set|clear <n> [delay <clocks>] [repeat <clocks>] [count <n>]
+;
+; The partner takes IRQ 0, as its 'wait 1 irq 0' would (clearing it):
+; #pragma pio_sim irq clear 0 delay 4 repeat 8
+; and hands back with IRQ 1, as its 'irq set 1' would:
+; #pragma pio_sim irq set 1 delay 7 repeat 8
+;
+; #pragma pio_sim config set_base 0 set_count 1
+
+.program ping
+    set pindirs, 1  ; GPIO 0 as an output
+.wrap_target
+    set pins, 1     ; this side's work: a pulse on GPIO 0
+    set pins, 0
+    irq set 0       ; wake the partner
+    wait 1 irq 1    ; stall until the partner sets IRQ 1, then clear it
+.wrap
+
+; The 'Ping-pong' example runs both sides.`
     },
     pingpong: {
-        code: `; Two state machines handing control back and forth (issue #3).
-; SM0 runs ping_sm0 and SM1 runs pong_sm1: programs go to SM0, SM1, ... in
-; source order unless '; #pragma pio_sim sm <n> program <name>' says otherwise.
+        group: 'IRQ and several state machines', label: 'Ping-pong (2 state machines)',
+        code: `; Two state machines take turns, handing over with IRQ flags.
+; Programs go to SM0, SM1, ... in source order, unless
+; '; #pragma pio_sim sm <n> program <name>' says otherwise.
+; Click SM0 / SM1 in the State panel to see each one.
 
-.program ping_sm0
+.program ping
+; This program's settings (SM0):
 ; #pragma pio_sim config set_base 0 set_count 1
     set pindirs, 1     ; GPIO 0 as an output
 .wrap_target
-    set pins, 1        ; SM0 work: pulse GPIO 0
+    set pins, 1        ; SM0's work: a pulse on GPIO 0
     set pins, 0
     irq set 0          ; wake SM1
-    wait 1 irq 1       ; stall until SM1 raises IRQ 1 (clears it)
+    wait 1 irq 1       ; stall until SM1 sets IRQ 1 (and clear it)
 .wrap
 
-.program pong_sm1
+.program pong
 ; #pragma pio_sim config set_base 1 set_count 1
     set pindirs, 1     ; GPIO 1 as an output
 .wrap_target
-    wait 1 irq 0       ; stall until SM0 raises IRQ 0 (clears it)
-    set pins, 1        ; SM1 work: pulse GPIO 1
+    wait 1 irq 0       ; stall until SM0 sets IRQ 0 (and clear it)
+    set pins, 1        ; SM1's work: a pulse on GPIO 1
     set pins, 0
-    irq set 1          ; hand control back to SM0
-.wrap`,
-        config: {
-            outBase: 0, setBase: 0, sidesetBase: 0, inBase: 0, jmpPin: 0,
-            inShiftDir: 'right', outShiftDir: 'right',
-            autoPush: false, pushThresh: 32, autoPull: false, pullThresh: 32
-        }
+    irq set 1          ; hand back to SM0
+.wrap`
     },
     shared_program: {
-        code: `; One program on three state machines. 'irq ... rel' adds the state
-; machine number to the flag index, so each copy talks to its neighbour,
-; and 'config sm <n>' gives each copy its own pin.
+        group: 'IRQ and several state machines', label: 'One program on 3 state machines (irq rel)',
+        code: `; One program run by three state machines, each passing a token to the
+; next. 'irq ... rel' adds the state machine number to the flag (within
+; flags 4-7 here), so the same code talks to a different neighbour on
+; each, and 'config sm <n>' gives each copy its own pin.
 ;
 ; #pragma pio_sim sm 0 program relay
 ; #pragma pio_sim sm 1 program relay
@@ -421,51 +613,40 @@ is_high:
 ; #pragma pio_sim config sm 0 set_base 0
 ; #pragma pio_sim config sm 1 set_base 1
 ; #pragma pio_sim config sm 2 set_base 2
-; Start the chain: SM0 waits on IRQ 4, so raise it at clock 2.
+; Start the chain: SM0 waits on IRQ 4, so set it at clock 2.
 ; #pragma pio_sim irq set 4 delay 2
 
 .program relay
 ; #pragma pio_sim config set_count 1
-    set pindirs, 1     ; this SM's pin as an output
+    set pindirs, 1     ; this state machine's pin as an output
 .wrap_target
-    wait 1 irq 4 rel   ; SM n waits on flag 4+n
-    set pins, 1 [3]
+    wait 1 irq 4 rel   ; SM n waits on flag 4 + n
+    set pins, 1 [3]    ; its pulse
     set pins, 0
-    irq set 5 rel      ; and wakes SM n+1 (flag 4+n+1; SM2 wakes flag 7)
-.wrap`,
-        config: {
-            outBase: 0, setBase: 0, sidesetBase: 0, inBase: 0, jmpPin: 0,
-            inShiftDir: 'right', outShiftDir: 'right',
-            autoPush: false, pushThresh: 32, autoPull: false, pullThresh: 32
-        }
-    },
-    irq_handshake: {
-        code: `.program ping
+    irq set 5 rel      ; wakes SM n + 1 (flag 4 + n + 1)
+.wrap
 
-; One half of a two state machine handshake. The partner is not
-; simulated: these IRQ events play its part (plain comments for pioasm).
-;
-; Partner sees IRQ 0 and clears it, as its "wait 1 irq 0" would:
-; #pragma pio_sim irq clear 0 delay 4 repeat 8
-; Partner hands control back, as its "irq set 1" would:
-; #pragma pio_sim irq set 1 delay 7 repeat 8
-
-; #pragma pio_sim config set_base 0 set_count 1
-
-    set pindirs, 1  ; GPIO 0 as an output
-.wrap_target
-    set pins, 1     ; Do this side's work
-    set pins, 0
-    irq set 0       ; Wake the partner
-    wait 1 irq 1    ; Stall until the partner raises IRQ 1 (clears it)
-.wrap`,
-        config: {
-            outBase: 0, setBase: 0, sidesetBase: 0, inBase: 0, jmpPin: 0,
-            inShiftDir: 'right', outShiftDir: 'right',
-            autoPush: false, pushThresh: 32, autoPull: false, pullThresh: 32
-        }
+; SM2 sets flag 7, which no state machine waits on, so the token goes
+; round once. Click IRQ 4 in the Interrupts panel to send another.`
     }
 };
+
+// The example menu, grouped.
+{
+    const groups = new Map();
+    for (const [key, ex] of Object.entries(examples)) {
+        if (!groups.has(ex.group)) {
+            const g = document.createElement('optgroup');
+            g.label = ex.group;
+            groups.set(ex.group, g);
+            exampleSelect.appendChild(g);
+        }
+        const o = document.createElement('option');
+        o.value = key;
+        o.textContent = ex.label;
+        groups.get(ex.group).appendChild(o);
+    }
+}
 
 exampleSelect.addEventListener('change', () => {
     const key = exampleSelect.value;
@@ -473,9 +654,9 @@ exampleSelect.addEventListener('change', () => {
         const ex = examples[key];
         codeView.value = ex.code;
 
-        // Every state machine's settings go back to reset values and the
-        // example's settings go to SM0, so nothing is left over from the
-        // previous source for applyProgramConfig to undo.
+        // Every state machine's settings go back to reset values, so nothing
+        // is left over from the previous source; the example's own come from
+        // its pragmas on Assemble.
         settingsFromDirectives = [new Set(), new Set(), new Set(), new Set()];
         // A new example's flags show by default again.
         timingIrqOverride.clear();
@@ -484,29 +665,6 @@ exampleSelect.addEventListener('change', () => {
             sm.setFifoMode('txrx');
         }
         selectSm(0, false);
-        cfgOutBase.value = ex.config.outBase;
-        // Anything an example does not mention goes back to its reset value.
-        cfgOutCount.value = ex.config.outCount !== undefined ? ex.config.outCount : 0;
-        cfgInCount.value = ex.config.inCount !== undefined ? ex.config.inCount : 32;
-        cfgFifoMode.value = ex.config.fifoMode !== undefined ? ex.config.fifoMode : 'txrx';
-        cfgClkDiv.value = ex.config.clkDiv !== undefined ? ex.config.clkDiv : 1;
-        cfgSetBase.value = ex.config.setBase;
-        if (ex.config.setCount !== undefined) {
-            cfgSetCount.value = ex.config.setCount;
-        } else {
-            cfgSetCount.value = 5;
-        }
-        cfgSidesetBase.value = ex.config.sidesetBase;
-        cfgInBase.value = ex.config.inBase;
-        cfgJmpPin.value = ex.config.jmpPin;
-        cfgInShiftDir.value = ex.config.inShiftDir;
-        cfgOutShiftDir.value = ex.config.outShiftDir;
-        cfgAutoPush.checked = ex.config.autoPush;
-        cfgPushThresh.value = ex.config.pushThresh;
-        cfgAutoPull.checked = ex.config.autoPull;
-        cfgPullThresh.value = ex.config.pullThresh;
-        cfgStatusSel.value = ex.config.statusSel !== undefined ? ex.config.statusSel : 0;
-        cfgStatusN.value = ex.config.statusN !== undefined ? ex.config.statusN : 0;
 
         updateConfig();
     }
@@ -990,6 +1148,20 @@ function updateUI(isStep = false) {
     regIsrCount.textContent = sm.isrCount;
 
     txFifoList.innerHTML = sm.txFifo.map(v => `<li>0x${v.toString(16).toUpperCase()}</li>`).join('');
+    // `; #pragma pio_sim tx` / `rx drain`: where the feed is, what was read.
+    const feed = sm.feed;
+    txFeedNote.style.display = feed.tx.length ? '' : 'none';
+    if (feed.tx.length) {
+        const sent = feed.txLoop ? sm.feedPos : Math.min(sm.feedPos, feed.tx.length);
+        txFeedNote.textContent = `Fed by '#pragma pio_sim tx': ${sent} of ${feed.tx.length} words put in` +
+            (feed.txLoop ? ' (loops)' : sent === feed.tx.length ? ' (all sent)' : '');
+    }
+    rxDrainNote.style.display = feed.rxDrain ? '' : 'none';
+    if (feed.rxDrain) {
+        const last = sm.drained.slice(-16);
+        rxDrainNote.textContent = `Read by '#pragma pio_sim rx drain' (${sm.drained.length}${sm.drained.length >= 256 ? '+' : ''}), latest last: ` +
+            (last.length ? last.map(feedWordText).join(' ') : 'nothing yet');
+    }
 
     // In the put/get FIFO modes the RX FIFO storage is four registers.
     const fifoMode = sm.fifoMode;
@@ -1181,6 +1353,11 @@ function drawTimingChart() {
     if (canvas.height !== desiredHeight) {
         canvas.height = desiredHeight;
     }
+    // One canvas pixel per CSS pixel, so long spans keep their detail.
+    const shownWidth = Math.round(canvas.clientWidth);
+    if (shownWidth > 0 && canvas.width !== shownWidth) {
+        canvas.width = shownWidth;
+    }
 
     const width = canvas.width;
     const height = canvas.height;
@@ -1190,7 +1367,7 @@ function drawTimingChart() {
 
     if (history.length === 0 || totalRows === 0) return;
 
-    const maxCycles = 50;
+    const maxCycles = parseInt(timingSpan.value) || 50;
     const startIndex = Math.max(0, history.length - maxCycles);
     const visibleHistory = history.slice(startIndex);
 
@@ -1208,11 +1385,16 @@ function drawTimingChart() {
     const pinRowHeight = numPins > 0 ? pinAreaHeight / numPins : 0;
     const regRowHeight = numRegs > 0 ? regAreaHeight / numRegs : 0;
 
+    // Grid: a line per clock and a darker one every 5, thinned out when
+    // the clocks get too narrow to tell apart.
     ctx.lineWidth = 1;
+    const major = [5, 10, 50, 100].find(n => n * stepX >= 20) || 100;
+    const minor = stepX >= 4 ? 1 : major / 5;
     for (let t = 0; t <= maxCycles; t++) {
         const x = t * stepX;
         const absClock = startIndex + t;
-        ctx.strokeStyle = (absClock % 5 === 0) ? '#bbb' : '#eee';
+        if (absClock % minor !== 0) continue;
+        ctx.strokeStyle = (absClock % major === 0) ? '#bbb' : '#eee';
         ctx.beginPath();
         ctx.moveTo(x, 0);
         ctx.lineTo(x, height);

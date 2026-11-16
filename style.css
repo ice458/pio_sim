@@ -248,6 +248,13 @@ body.multi-sm .sm-scope {
 
 .l-row.l-warning { background-color: rgba(255, 183, 77, 0.22); }
 
+.chart-span {
+    float: right;
+    font-size: 0.7em;
+    font-weight: normal;
+    color: #555;
+}
+
 .chart-legend {
     display: flex;
     flex-wrap: wrap;
@@ -816,4 +823,12 @@ button:disabled {
     background-color: #2196f3;
     color: white;
     border-color: #1976d2;
+}
+
+/* FIFO feeds from #pragma pio_sim tx / rx drain */
+.feed-note {
+    font-size: 0.8em;
+    color: #555;
+    margin-top: 6px;
+    word-break: break-word;
 }

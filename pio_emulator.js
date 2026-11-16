@@ -55,6 +55,8 @@ class PioStateMachine {
         this.sidesetCount = 0;      // side-set data bits (.side_set count)
         this.sidesetOpt = false;
         this.sidesetPindirs = false;
+        // From `; #pragma pio_sim tx` / `rx drain` (set by loadProgram).
+        this.feed = { tx: [], txLoop: false, rxDrain: false };
         Object.assign(this, PIO_SM_CONFIG_DEFAULTS);
         // txrx | tx | rx | txput | txget | putget (SHIFTCTRL_FJOIN_*)
         this.fifoMode = 'txrx';
@@ -87,6 +89,32 @@ class PioStateMachine {
         this.nextTime = 0;          // system clock of the next cycle
         this.clkDivAcc = 0;
         this.clkDivCarry = false;
+        this.feedPos = 0;           // next word of feed.tx
+        this.drained = [];          // words read by `rx drain`, oldest first
+    }
+
+    // ---- FIFO feeds (`; #pragma pio_sim tx` / `rx drain`) ----------------
+    //
+    // What a DMA channel paced by the FIFO's DREQ would do, without its
+    // latency: the TX FIFO is topped up before every step, the RX FIFO
+    // emptied after it.
+
+    feedTx() {
+        const words = this.feed.tx;
+        if (words.length === 0) return;
+        while (this.txFifo.length < this.txCapacity()) {
+            if (this.feedPos >= words.length) {
+                if (!this.feed.txLoop) return;
+                this.feedPos = 0;
+            }
+            this.txFifo.push(words[this.feedPos++]);
+        }
+    }
+
+    drainRx() {
+        if (!this.feed.rxDrain) return;
+        while (this.rxFifo.length > 0) this.drained.push(this.rxFifo.shift());
+        if (this.drained.length > 256) this.drained.splice(0, this.drained.length - 256);
     }
 
     // ---- clock -----------------------------------------------------------
@@ -699,6 +727,7 @@ class PioEmulator {
             this.sms.forEach((sm, i) => {
                 const p = programData.smPrograms[i] === null ? null : programData.programs[programData.smPrograms[i]];
                 this.assign(sm, p);
+                sm.feed = (programData.smFeeds && programData.smFeeds[i]) || { tx: [], txLoop: false, rxDrain: false };
             });
         } else {
             // A single program at address 0, run by SM0.
@@ -711,7 +740,10 @@ class PioEmulator {
             };
             this.instructions = programData.instructions;
             this.programs = [p];
-            this.sms.forEach((sm, i) => this.assign(sm, i === 0 ? p : null));
+            this.sms.forEach((sm, i) => {
+                this.assign(sm, i === 0 ? p : null);
+                sm.feed = { tx: [], txLoop: false, rxDrain: false };
+            });
         }
         this.reset();
     }
@@ -896,6 +928,7 @@ class PioEmulator {
         const t = this.sysclk;
         // A stimulus owns its pin: re-apply so a manual toggle cannot linger.
         this.applyStimuli(t);
+        for (const sm of active) sm.feedTx();
         // Pad levels at this system clock. Outputs written now reach the
         // pads on the next one.
         const pad = this.getAllPinStates();
@@ -939,6 +972,7 @@ class PioEmulator {
             ran.push(sm);
         }
         this.commitIrqWrites();
+        for (const sm of active) sm.drainRx();
 
         const padEnd = this.getAllPinStates();
         this.history[this.history.length - 1].padEnd = padEnd;

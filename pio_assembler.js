@@ -893,9 +893,10 @@ class PioAssembler {
         const irqEvents = [];
         const smAssign = [];
         const smConfig = [];          // per state machine, from `config sm <n>`
+        const feeds = [];             // `tx` / `rx` pragmas
         const globalConfig = {};
-        const runPragmas = (list, config) => {
-            const out = { stimuli, irqEvents, config, configSeen: new Set(), smAssign, smConfig };
+        const runPragmas = (list, config, program = null) => {
+            const out = { stimuli, irqEvents, config, configSeen: new Set(), smAssign, smConfig, feeds, program };
             for (const p of list) atLine(p.line, () => { this.line = p.line; this.handlePragma(p.body, out); });
         };
         this.symbols = this.globalSymbols;
@@ -904,7 +905,7 @@ class PioAssembler {
             if (st.pragmas === this.globalPragmas) return {};
             this.loadProgramState(st);
             const c = {};
-            runPragmas(st.pragmas, c);
+            runPragmas(st.pragmas, c, i);
             return c;
         });
 
@@ -974,6 +975,26 @@ class PioAssembler {
         const smConfigs = smPrograms.map((idx, sm) => idx === null ? null
             : Object.assign({}, programs[idx].config, globalConfig, programConfigs[idx], smConfig[sm] ? smConfig[sm].config : {}));
 
+        // FIFO feeds per state machine: to the one named, to the state
+        // machines running the program the pragma is in, or before the
+        // first .program, to every state machine that runs a program.
+        const smFeeds = smPrograms.map(() => ({ tx: [], txLoop: false, rxDrain: false }));
+        for (const f of feeds) {
+            atLine(f.line, () => {
+                const targets = f.sm !== null ? [f.sm]
+                    : [0, 1, 2, 3].filter(sm => f.program === null ? smPrograms[sm] !== null : smPrograms[sm] === f.program);
+                for (const sm of targets) {
+                    if (smPrograms[sm] === null) throw new Error(`#pragma pio_sim: ${f.kind} for state machine ${sm}, which runs no program`);
+                    if (f.kind === 'tx') {
+                        smFeeds[sm].tx.push(...f.words);
+                        if (f.loop) smFeeds[sm].txLoop = true;
+                    } else {
+                        smFeeds[sm].rxDrain = true;
+                    }
+                }
+            });
+        }
+
         const result = programs.map(p => ({
             name: p.name, line: p.line, offset: p.offset, length: p.instructions.length,
             pioVersion: p.pioVersion,
@@ -1009,7 +1030,8 @@ class PioAssembler {
             programs: result,
             memory,
             smPrograms,
-            smConfigs
+            smConfigs,
+            smFeeds
         };
     }
 
@@ -1225,11 +1247,15 @@ class PioAssembler {
     // ---- simulator pragmas ----------------------------------------------
     //
     // `; #pragma pio_sim ...` comment lines carry simulator setup in the
-    // source. pioasm sees ordinary comments. Three forms:
+    // source. pioasm sees ordinary comments. The forms:
     //
     //   pin <n> [<level> delay <clocks>] <level> <clocks> ... [count <n>]
     //   irq set|clear <n> [delay <clocks>] [repeat <clocks>] [count <n>]
-    //   config <name> <value> [<name> <value> ...]
+    //   config [sm <n>] <name> <value> [<name> <value> ...]
+    //   sm <n> program <name> | sm <n> off
+    //   tx [sm <n>] <word|"text"> ... [loop]
+    //   rx [sm <n>] drain
+    //   chip rp2040|rp2350
     //
     // Numbers may be decimal, 0x hex, 0b binary, or a .define name.
     handlePragma(body, out) {
@@ -1240,6 +1266,8 @@ class PioAssembler {
             case 'irq': this.pragmaIrq(tokens, out.irqEvents); break;
             case 'config': this.pragmaConfig(tokens, out.config, out.configSeen, out); break;
             case 'sm': this.pragmaSm(tokens, out.smAssign); break;
+            case 'tx':
+            case 'rx': this.pragmaFeed(body, out); break;
             case 'chip': {
                 // chip rp2040|rp2350: whose timing to follow.
                 const chip = (tokens[1] || '').toLowerCase();
@@ -1251,7 +1279,7 @@ class PioAssembler {
                 break;
             }
             default:
-                throw new Error(`#pragma pio_sim: unknown pragma '${tokens[0] || ''}' (expected pin, irq, config, sm or chip)`);
+                throw new Error(`#pragma pio_sim: unknown pragma '${tokens[0] || ''}' (expected pin, irq, config, sm, tx, rx or chip)`);
         }
     }
 
@@ -1271,6 +1299,81 @@ class PioAssembler {
         else throw new Error(`#pragma pio_sim: ${usage}`);
         if (smAssign.some(a => a.sm === sm)) throw new Error(`#pragma pio_sim: sm ${sm} given twice`);
         smAssign.push({ sm, program, line: this.line });
+    }
+
+    // tx / rx: what a DMA channel would do for the state machine.
+    //   tx [sm <n>] <word|"text"> ... [loop]
+    //     Words for the TX FIFO, put in whenever it has room. A "text" gives
+    //     one word per character (\n, \r, \t, \0, \\, \" and \xNN escapes).
+    //     Several tx lines add up; `loop` starts the list over at its end.
+    //   rx [sm <n>] drain
+    //     Read the RX FIFO whenever it holds a word, so the state machine
+    //     never stalls on a full one; the words read are listed.
+    // Without `sm <n>`, they are for the state machines running the program
+    // the pragma is in; before the first .program, for every state machine
+    // that runs one (as a `config` there is).
+    pragmaFeed(body, out) {
+        // Tokens, with a quoted string as one.
+        const tokens = body.trim().match(/"(?:[^"\\]|\\.)*"|"[^]*|\S+/g) || [];
+        const kind = tokens[0].toLowerCase();
+        const usage = kind === 'tx'
+            ? `expected '; #pragma pio_sim tx [sm <n>] <word|"text"> ... [loop]'`
+            : `expected '; #pragma pio_sim rx [sm <n>] drain'`;
+        let i = 1;
+        let sm = null;
+        if ((tokens[1] || '').toLowerCase() === 'sm') {
+            if (!/^[0-3]$/.test(tokens[2] || '')) {
+                throw new Error(`#pragma pio_sim: state machine number must be 0-3, got '${tokens[2] || ''}' (${usage})`);
+            }
+            sm = parseInt(tokens[2]);
+            i = 3;
+        }
+        const feed = { kind, sm, program: out.program, words: [], loop: false, line: this.line };
+        if (kind === 'rx') {
+            if ((tokens[i] || '').toLowerCase() !== 'drain' || tokens.length !== i + 1) {
+                throw new Error(`#pragma pio_sim: ${usage}`);
+            }
+            out.feeds.push(feed);
+            return;
+        }
+        for (; i < tokens.length; i++) {
+            const tok = tokens[i];
+            if (tok.toLowerCase() === 'loop') {
+                if (i !== tokens.length - 1) throw new Error(`#pragma pio_sim: 'loop' must come last (${usage})`);
+                feed.loop = true;
+            } else if (tok.startsWith('"')) {
+                if (!/^"(?:[^"\\]|\\.)*"$/.test(tok)) throw new Error(`#pragma pio_sim: unterminated string ${tok}`);
+                feed.words.push(...PioAssembler.unescapeText(tok.slice(1, -1)));
+            } else {
+                const v = this.pragmaNumber(tok, 'tx word', usage);
+                if (v > 0xFFFFFFFF) throw new Error(`#pragma pio_sim: tx word ${tok} does not fit in 32 bits`);
+                feed.words.push(v >>> 0);
+            }
+        }
+        if (feed.words.length === 0) throw new Error(`#pragma pio_sim: tx has no words (${usage})`);
+        out.feeds.push(feed);
+    }
+
+    // Character codes of a quoted string's contents, escapes resolved.
+    static unescapeText(s) {
+        const codes = [];
+        for (let i = 0; i < s.length; i++) {
+            if (s[i] !== '\\') {
+                codes.push(s.charCodeAt(i));
+                continue;
+            }
+            const c = s[++i];
+            const simple = { n: 10, r: 13, t: 9, '0': 0, '\\': 92, '"': 34 };
+            if (Object.prototype.hasOwnProperty.call(simple, c)) {
+                codes.push(simple[c]);
+            } else if (c === 'x' && /^[0-9a-f]{2}$/i.test(s.substr(i + 1, 2))) {
+                codes.push(parseInt(s.substr(i + 1, 2), 16));
+                i += 2;
+            } else {
+                throw new Error(`#pragma pio_sim: unknown escape '\\${c === undefined ? '' : c}' in a string`);
+            }
+        }
+        return codes;
     }
 
     pragmaNumber(tok, what, usage) {

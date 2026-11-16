@@ -15,7 +15,8 @@ A browser-based PIO (Programmable I/O) assembly simulator for the Raspberry Pi P
   - GPIO pin states and timing charts (pins, IRQ flags and registers; hover for the values at any clock)
 - **Interrupts (IRQ) Monitoring:** Clickable IRQ flags to test wait and set behaviors interactively.
 - **Several state machines:** Up to four state machines on shared instruction memory, GPIOs and IRQ flags, with a summary of all of them and tabs for each one's details and settings.
-- **Simulator pragmas:** Pin waveforms, IRQ events, settings and state machine assignment declared in the source (see below).
+- **Simulator pragmas:** Pin waveforms, IRQ events, FIFO data, settings and state machine assignment declared in the source (see below).
+- **Examples:** From a blinking pin to UART, SPI, I2S and WS2812 (NeoPixel), each commented and set up by its own pragmas, so it runs as soon as it is loaded.
 
 ## Usage
 
@@ -77,6 +78,25 @@ Syntax: `irq set|clear <n> [delay <clocks>] [repeat <clocks>] [count <n>]`
 - The instruction executed on that clock already sees the new flag value. A real partner state machine is seen one cycle after it executes `irq`, so a partner instruction on cycle N corresponds to `delay N+1`.
 - The program can still set and clear the flag itself, and so can you by clicking it. Scheduled flags are added to the timing chart.
 
+### FIFO data
+
+Keep the TX FIFO supplied and the RX FIFO read, as a DMA channel would on the chip. Programs such as a UART or I2S output then run without pushing every word by hand.
+
+```
+; #pragma pio_sim tx 7 1 1 3 3                     ; these words, then nothing
+; #pragma pio_sim tx 0xF0F000FF 0x80017FFE loop    ; these words over and over
+; #pragma pio_sim tx "Hi!\n"                       ; one word per character
+; #pragma pio_sim rx drain                         ; read every word pushed
+```
+
+Syntax: `tx [sm <n>] <word|"text"> ... [loop]` and `rx [sm <n>] drain`
+
+- The TX FIFO is topped up before every step, so the state machine finds a word whenever it pulls. A real DMA channel takes a few clocks to respond, which the simulator leaves out.
+- Several `tx` lines add up to one list. `loop` starts it over at the end; without it, the FIFO runs dry after the last word.
+- In a text, `\n`, `\r`, `\t`, `\0`, `\\`, `\"` and `\xNN` are escapes. A `;` or `//` ends the pragma, so write `;` as `\x3B` and `/` as `\x2F`.
+- `rx drain` empties the RX FIFO after every step, so the program never stalls on a full one. The words read are listed under the RX FIFO, with their characters.
+- Scope is as for `config`: inside a program, the state machines running it; before the first `.program`, every state machine; `sm <n>` names one.
+
 ### Settings
 
 Load the settings controls on Assemble, so the pin mapping travels with the source.
@@ -128,7 +148,7 @@ All state machines run on one time line. A step advances to the next system cloc
 ## Limitations
 
 - One PIO block. `irq prev` / `irq next` address flags of neighbouring blocks, which exist but nothing else drives; IRQ event pragmas can stand in for them.
-- `OUT_STICKY` / `INLINE_OUT_EN`, GPIOs above 31 (`GPIOBASE`), system-level interrupts and DMA are not modelled.
+- `OUT_STICKY` / `INLINE_OUT_EN`, GPIOs above 31 (`GPIOBASE`) and system-level interrupts are not modelled. DMA is not either, beyond what the `tx` / `rx drain` pragmas stand in for.
 - Instructions are accepted without a `.program` line, which `pioasm` would reject.
 
 ## License
