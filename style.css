@@ -433,6 +433,135 @@ button:disabled {
     color: #e53935;
 }
 
+/* Program name rows in the listing of several programs */
+.program-header {
+    padding: 4px 5px 2px;
+    color: #9cdcfe;
+    font-style: italic;
+    white-space: pre;
+}
+
+/* Other state machines' PC in the listing */
+.pc-badges {
+    display: inline-block;
+    min-width: 0;
+    margin-right: 4px;
+}
+
+.pc-badge {
+    display: inline-block;
+    padding: 0 4px;
+    margin-right: 3px;
+    border-radius: 3px;
+    font-size: 11px;
+    color: #fff;
+}
+
+.pc-badge.sm0 { background-color: #1e88e5; }
+.pc-badge.sm1 { background-color: #43a047; }
+.pc-badge.sm2 { background-color: #fb8c00; }
+.pc-badge.sm3 { background-color: #8e24aa; }
+
+/* State machine summary and tabs */
+.sm-summary {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 13px;
+    margin-bottom: 8px;
+}
+
+.sm-summary th,
+.sm-summary td {
+    border-bottom: 1px solid #e0e0e0;
+    padding: 3px 6px;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.sm-summary th {
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    font-weight: 600;
+    color: #555;
+}
+
+.sm-summary tbody tr {
+    cursor: pointer;
+}
+
+.sm-summary tbody tr:hover {
+    background-color: #f5f5f5;
+}
+
+.sm-summary tbody tr.selected {
+    background-color: #e3f2fd;
+}
+
+.sm-summary tbody tr.off {
+    color: #aaa;
+}
+
+.sm-summary td.instr {
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.sm-status {
+    display: inline-block;
+    padding: 0 5px;
+    border-radius: 3px;
+    color: #fff;
+    font-size: 11px;
+}
+
+.sm-status.running { background-color: #4caf50; }
+.sm-status.stalled { background-color: #ff9800; }
+.sm-status.error { background-color: #f44336; }
+.sm-status.stopped, .sm-status.off { background-color: #9e9e9e; }
+
+.sm-tabs-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 6px 0;
+}
+
+.sm-tabs-label {
+    font-size: 0.85em;
+    color: #555;
+}
+
+.sm-tabs {
+    display: flex;
+    gap: 4px;
+}
+
+.sm-tab {
+    padding: 3px 12px;
+    border: 1px solid #bbb;
+    border-radius: 4px;
+    background-color: #fafafa;
+    color: #333;
+    cursor: pointer;
+    font-size: 0.85em;
+}
+
+.sm-tab.off {
+    color: #aaa;
+}
+
+.sm-tab:hover {
+    background-color: #e3f2fd;
+}
+
+.sm-tab.selected,
+.sm-tab.selected:hover {
+    background-color: #007acc;
+    border-color: #007acc;
+    color: #fff;
+}
+
 #timing-pin-selector .gpio-bit {
     cursor: pointer;
 }

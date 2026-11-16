@@ -147,22 +147,16 @@ class PioAssembler {
     }
 
     assemble(sourceCode) {
-        this.programName = 'program';
-        this.programCount = 0;
-        this.pioVersion = 1;
-        this.symbols = new Map();   // name -> { isLabel, expr, line, resolving }
-        this.items = [];            // instructions before resolution
-        this.sideset = null;        // { expr, opt, pindirs }
-        this.wrapTarget = null;
-        this.wrap = null;
-        this.origin = null;
-        this.fifo = 'txrx';
-        this.dirIn = null;
-        this.dirOut = null;
-        this.dirSet = null;
-        this.movStatus = null;
-        this.clockDiv = null;
-        this.pragmas = [];
+        // Symbols and pragmas before the first .program are global, as in
+        // pioasm. Lines before the first .program also form an unnamed
+        // program when they hold instructions (a single-program source
+        // without a .program line).
+        this.globalSymbols = new Map(); // name -> { isLabel, expr, line, resolving }
+        this.globalPragmas = [];
+        this.states = [];               // finished programs
+        this.inProgram = false;
+        this.defaultPioVersion = 1;
+        this.startProgram('program', 0, true);
 
         const rawLines = sourceCode.replace(/\r/g, '').split('\n');
         const scanned = PioAssembler.scanLines(rawLines);
@@ -179,8 +173,42 @@ class PioAssembler {
                 throw new Error(`Line ${this.line}: ${e.message}`);
             }
         }
+        if (this.inProgram || this.items.length > 0 || this.states.length === 0) {
+            this.states.push(this.captureProgram());
+        }
 
         return this.finalize();
+    }
+
+    // Per-program assembler state. The fields live on `this` while the
+    // program is parsed or finalized.
+    startProgram(name, line, implicit) {
+        this.programName = name;
+        this.programLine = line;
+        this.symbols = implicit ? this.globalSymbols : new Map();
+        this.pragmas = implicit ? this.globalPragmas : [];
+        this.items = [];            // instructions before resolution
+        this.sideset = null;        // { expr, opt, pindirs }
+        this.wrapTarget = null;
+        this.wrap = null;
+        this.origin = null;
+        this.fifo = 'txrx';
+        this.dirIn = null;
+        this.dirOut = null;
+        this.dirSet = null;
+        this.movStatus = null;
+        this.clockDiv = null;
+        this.pioVersion = this.defaultPioVersion;
+    }
+
+    captureProgram() {
+        const st = {};
+        for (const f of PioAssembler.PROGRAM_FIELDS) st[f] = this[f];
+        return st;
+    }
+
+    loadProgramState(st) {
+        for (const f of PioAssembler.PROGRAM_FIELDS) this[f] = st[f];
     }
 
     // Strip comments (`;`, `//`, `/* */`) and `% lang { ... %}` pass-through
@@ -462,16 +490,19 @@ class PioAssembler {
             case '.program': {
                 if (!this.isName()) throw this.unexpected('a program name');
                 const name = this.tok[this.pos++].s;
-                // One source is one state machine: a second program would
-                // need a second state machine to run on.
-                this.programCount++;
-                if (this.programCount > 1) {
-                    throw new Error(`multiple .program blocks are not supported ('${this.programName}', then '${name}'). This simulator runs a single state machine, so keep one .program per source.`);
+                if (this.inProgram) {
+                    this.states.push(this.captureProgram());
+                } else {
+                    if (this.items.length > 0) {
+                        throw new Error('.program must precede any program instructions');
+                    }
+                    this.defaultPioVersion = this.pioVersion;
                 }
-                if (this.items.length > 0) {
-                    throw new Error('.program must precede any program instructions');
+                if (this.states.some(st => st.programName === name)) {
+                    throw new Error(`program ${name} already exists`);
                 }
-                this.programName = name;
+                this.startProgram(name, this.line, false);
+                this.inProgram = true;
                 break;
             }
             case '.define': {
@@ -758,8 +789,13 @@ class PioAssembler {
         }
     }
 
+    // A program's own symbol, or else a global one.
+    lookupSymbol(name) {
+        return this.symbols.get(name) || this.globalSymbols.get(name);
+    }
+
     addSymbol(name, isLabel, expr) {
-        const existing = this.symbols.get(name);
+        const existing = this.lookupSymbol(name);
         if (existing) {
             if (existing.isLabel !== isLabel) {
                 throw new Error(`'${name}' was already defined as a ${existing.isLabel ? 'label' : 'value'} at line ${existing.line}`);
@@ -786,7 +822,7 @@ class PioAssembler {
             case 'int':
                 return expr.v | 0;
             case 'name': {
-                const sym = this.symbols.get(expr.name);
+                const sym = this.lookupSymbol(expr.name);
                 if (!sym) throw new Error(`undefined symbol '${expr.name}'`);
                 if (sym.resolving) throw new Error(`circular dependency in definition of '${expr.name}'`);
                 sym.resolving = true;
@@ -820,7 +856,148 @@ class PioAssembler {
         }
     }
 
+    // Resolve every program, apply the pragmas, lay the programs out in the
+    // 32-word instruction memory and decide which state machine runs which.
     finalize() {
+        const atLine = (line, fn) => {
+            try {
+                return fn();
+            } catch (e) {
+                throw new Error(`Line ${line}: ${e.message}`);
+            }
+        };
+
+        const programs = this.states.map(st => {
+            this.loadProgramState(st);
+            return this.finalizeProgram();
+        });
+
+        // Pragmas. Pin waveforms and IRQ events belong to the whole block.
+        // A `config` pragma before the first .program applies to every state
+        // machine; one inside a program, to the state machines running it.
+        const stimuli = [];
+        const irqEvents = [];
+        const smAssign = [];
+        const smConfig = [];          // per state machine, from `config sm <n>`
+        const globalConfig = {};
+        const runPragmas = (list, config) => {
+            const out = { stimuli, irqEvents, config, configSeen: new Set(), smAssign, smConfig };
+            for (const p of list) atLine(p.line, () => { this.line = p.line; this.handlePragma(p.body, out); });
+        };
+        this.symbols = this.globalSymbols;
+        runPragmas(this.globalPragmas, globalConfig);
+        const programConfigs = this.states.map((st, i) => {
+            if (st.pragmas === this.globalPragmas) return {};
+            this.loadProgramState(st);
+            const c = {};
+            runPragmas(st.pragmas, c);
+            return c;
+        });
+
+        // Layout: programs with .origin go there; the others take the first
+        // free addresses in source order.
+        const used = new Array(32).fill(null);
+        const place = (p, at) => {
+            for (let a = at; a < at + p.instructions.length; a++) used[a] = p.name;
+            p.offset = at;
+        };
+        for (const p of programs.filter(p => p.origin !== null)) {
+            atLine(p.line, () => {
+                if (p.origin + p.instructions.length > 32) {
+                    throw new Error(`program ${p.name} does not fit at .origin ${p.origin}`);
+                }
+                for (let a = p.origin; a < p.origin + p.instructions.length; a++) {
+                    if (used[a] !== null) throw new Error(`program ${p.name} at .origin ${p.origin} overlaps program ${used[a]}`);
+                }
+                place(p, p.origin);
+            });
+        }
+        for (const p of programs.filter(p => p.origin === null)) {
+            let at = -1;
+            for (let a = 0; a + p.instructions.length <= 32 && at < 0; a++) {
+                if (used.slice(a, a + p.instructions.length).every(u => u === null)) at = a;
+            }
+            if (at < 0) {
+                const total = programs.reduce((n, q) => n + q.instructions.length, 0);
+                throw new Error(`Line ${p.line}: no room for program ${p.name} (${p.instructions.length} instructions): ` +
+                    `the programs need ${total} of the 32 instruction memory words`);
+            }
+            place(p, at);
+        }
+
+        const memory = [];
+        for (const p of programs) {
+            p.instructions.forEach((instr, i) => {
+                memory[p.offset + i] = instr.type === 'JMP' ? Object.assign({}, instr, { target: instr.target + p.offset }) : instr;
+            });
+            p.programMap = p.programMap.map(m => Object.assign({}, m, { pc: m.pc + p.offset }));
+        }
+
+        // Which program each state machine runs: `; #pragma pio_sim sm`, or
+        // else the programs in source order on SM0, SM1, ...
+        let smPrograms;
+        if (smAssign.length > 0) {
+            smPrograms = [null, null, null, null];
+            for (const a of smAssign) {
+                atLine(a.line, () => {
+                    if (a.program === null) return;
+                    const idx = programs.findIndex(p => p.name === a.program);
+                    if (idx < 0) throw new Error(`#pragma pio_sim: no program named '${a.program}'`);
+                    smPrograms[a.sm] = idx;
+                });
+            }
+        } else {
+            if (programs.length > 4) {
+                throw new Error(`Line ${programs[4].line}: ${programs.length} programs but 4 state machines; ` +
+                    `say which program runs where with '; #pragma pio_sim sm <n> program <name>'`);
+            }
+            smPrograms = [0, 1, 2, 3].map(i => i < programs.length ? i : null);
+        }
+
+        // Settings per state machine: the program's directives, then global
+        // config pragmas, then the program's own config pragmas, then
+        // `config sm <n>` for that state machine.
+        const smConfigs = smPrograms.map((idx, sm) => idx === null ? null
+            : Object.assign({}, programs[idx].config, globalConfig, programConfigs[idx], smConfig[sm] ? smConfig[sm].config : {}));
+
+        const result = programs.map(p => ({
+            name: p.name, line: p.line, offset: p.offset, length: p.instructions.length,
+            pioVersion: p.pioVersion,
+            instructions: p.instructions,
+            wrapTarget: p.wrapTarget + p.offset, wrap: p.wrap + p.offset,
+            sidesetCount: p.sidesetCount, sidesetOpt: p.sidesetOpt, sidesetPindirs: p.sidesetPindirs,
+            labels: p.labels, defines: p.defines,
+            config: Object.assign({}, p.config, globalConfig, programConfigs[programs.indexOf(p)]),
+            programMap: p.programMap
+        }));
+
+        // The first program also at the top level, program-relative, for
+        // single-program use.
+        const first = programs[0];
+        return {
+            programName: first.name,
+            pioVersion: first.pioVersion,
+            instructions: first.instructions,
+            labels: first.labels,
+            defines: first.defines,
+            origin: first.origin,
+            wrapTarget: first.wrapTarget,
+            wrap: first.wrap,
+            sidesetCount: first.sidesetCount,
+            sidesetOpt: first.sidesetOpt,
+            sidesetPindirs: first.sidesetPindirs,
+            config: smConfigs[0] || result[0].config,
+            stimuli,
+            irqEvents,
+            programMap: result[0].programMap,
+            programs: result,
+            memory,
+            smPrograms,
+            smConfigs
+        };
+    }
+
+    finalizeProgram() {
         const atLine = (line, fn) => {
             try {
                 return fn();
@@ -899,7 +1076,9 @@ class PioAssembler {
         // Symbols, for reference by the caller.
         const labels = {};
         const defines = {};
-        for (const [name, sym] of this.symbols) {
+        const visible = this.symbols === this.globalSymbols
+            ? [...this.symbols] : [...this.globalSymbols, ...this.symbols];
+        for (const [name, sym] of visible) {
             const value = atLine(sym.line, () => this.resolve(sym.expr));
             if (sym.isLabel) labels[name] = value;
             else defines[name] = value;
@@ -955,17 +1134,9 @@ class PioAssembler {
             ? null
             : atLine(this.origin.line, () => range(this.resolve(this.origin.expr), 0, 31, 'origin'));
 
-        // Simulator pragmas. A `config` pragma is explicit simulator setup,
-        // so it overrides what a directive set for the same setting.
-        const pragmaOut = { stimuli: [], irqEvents: [], config, configSeen: new Set() };
-        for (const p of this.pragmas) {
-            atLine(p.line, () => this.handlePragma(p.body, pragmaOut));
-        }
-        const stimuli = pragmaOut.stimuli;
-        const irqEvents = pragmaOut.irqEvents;
-
         return {
-            programName: this.programName,
+            name: this.programName,
+            line: this.programLine,
             pioVersion: this.pioVersion,
             instructions,
             labels,
@@ -977,8 +1148,6 @@ class PioAssembler {
             sidesetOpt,
             sidesetPindirs,
             config,
-            stimuli,
-            irqEvents,
             programMap
         };
     }
@@ -1053,14 +1222,33 @@ class PioAssembler {
         switch (kind) {
             case 'pin': this.pragmaPin(tokens, out.stimuli); break;
             case 'irq': this.pragmaIrq(tokens, out.irqEvents); break;
-            case 'config': this.pragmaConfig(tokens, out.config, out.configSeen); break;
+            case 'config': this.pragmaConfig(tokens, out.config, out.configSeen, out); break;
+            case 'sm': this.pragmaSm(tokens, out.smAssign); break;
             default:
-                throw new Error(`#pragma pio_sim: unknown pragma '${tokens[0] || ''}' (expected pin, irq or config)`);
+                throw new Error(`#pragma pio_sim: unknown pragma '${tokens[0] || ''}' (expected pin, irq, config or sm)`);
         }
     }
 
+    // sm: which program a state machine runs.
+    //   sm <n> program <name>     sm <n> off
+    // With any `sm` pragma, state machines not named stay off.
+    pragmaSm(tokens, smAssign) {
+        const usage = `expected '; #pragma pio_sim sm <0-3> program <name>' or '; #pragma pio_sim sm <0-3> off'`;
+        if (!/^[0-3]$/.test(tokens[1] || '')) {
+            throw new Error(`#pragma pio_sim: state machine number must be 0-3, got '${tokens[1] || ''}' (${usage})`);
+        }
+        const sm = parseInt(tokens[1]);
+        const what = (tokens[2] || '').toLowerCase();
+        let program;
+        if (what === 'program' && tokens.length === 4) program = tokens[3];
+        else if (what === 'off' && tokens.length === 3) program = null;
+        else throw new Error(`#pragma pio_sim: ${usage}`);
+        if (smAssign.some(a => a.sm === sm)) throw new Error(`#pragma pio_sim: sm ${sm} given twice`);
+        smAssign.push({ sm, program, line: this.line });
+    }
+
     pragmaNumber(tok, what, usage) {
-        if (tok !== undefined && this.symbols.has(tok)) {
+        if (tok !== undefined && this.lookupSymbol(tok)) {
             return this.resolve({ t: 'name', name: tok });
         }
         if (tok === undefined || !/^(0x[0-9a-f]+|0b[01]+|\d+)$/i.test(tok)) {
@@ -1171,9 +1359,21 @@ class PioAssembler {
     // config: state machine settings that pioasm directives cannot express
     // (pin bases, JMP pin) or that the C setup code would normally apply.
     // They are loaded into the simulator's controls on assemble.
-    pragmaConfig(tokens, config, seen) {
+    // config [sm <n>] <name> <value> ...: with `sm <n>`, the settings are
+    // for that state machine only, e.g. one program on several state
+    // machines with different pins.
+    pragmaConfig(tokens, config, seen, out) {
+        if ((tokens[1] || '').toLowerCase() === 'sm') {
+            if (!/^[0-3]$/.test(tokens[2] || '')) {
+                throw new Error(`#pragma pio_sim: state machine number must be 0-3, got '${tokens[2] || ''}'`);
+            }
+            const sm = parseInt(tokens[2]);
+            if (!out.smConfig[sm]) out.smConfig[sm] = { config: {}, seen: new Set() };
+            this.pragmaConfig(['config', ...tokens.slice(3)], out.smConfig[sm].config, out.smConfig[sm].seen, out);
+            return;
+        }
         const names = Object.keys(PioAssembler.CONFIG_PRAGMA);
-        const usage = `expected '; #pragma pio_sim config <name> <value> ...' with names: ${names.join(', ')}`;
+        const usage = `expected '; #pragma pio_sim config [sm <n>] <name> <value> ...' with names: ${names.join(', ')}`;
         if (tokens.length < 3 || tokens.length % 2 !== 1) {
             throw new Error(`#pragma pio_sim: config takes name/value pairs (${usage})`);
         }
@@ -1232,3 +1432,9 @@ PioAssembler.CONFIG_PRAGMA = {
     fifo: { key: 'fifoMode', values: { txrx: 'txrx', tx: 'tx', rx: 'rx', txput: 'txput', txget: 'txget', putget: 'putget' } },
     clkdiv: { key: 'clkDiv', min: 1, max: 65535, decimal: true }
 };
+
+// Assembler state that belongs to one program.
+PioAssembler.PROGRAM_FIELDS = [
+    'programName', 'programLine', 'symbols', 'pragmas', 'items', 'sideset', 'wrapTarget', 'wrap',
+    'origin', 'fifo', 'dirIn', 'dirOut', 'dirSet', 'movStatus', 'clockDiv', 'pioVersion'
+];

@@ -14,7 +14,8 @@ A browser-based PIO (Programmable I/O) assembly simulator for the Raspberry Pi P
   - TX / RX FIFO buffers
   - GPIO pin states and timing charts
 - **Interrupts (IRQ) Monitoring:** Clickable IRQ flags to test wait and set behaviors interactively.
-- **Simulator pragmas:** Pin waveforms, IRQ events and settings declared in the source (see below).
+- **Several state machines:** Up to four state machines on shared instruction memory, GPIOs and IRQ flags, with a summary of all of them and tabs for each one's details and settings.
+- **Simulator pragmas:** Pin waveforms, IRQ events, settings and state machine assignment declared in the source (see below).
 
 ## Usage
 
@@ -32,14 +33,15 @@ The emulator follows the PIO chapters of the RP2040 and RP2350 datasheets, and t
 - **Settings start at the hardware reset values.** In particular OUT Count is 0, so `out pins` writes nothing until you set it, as on a real chip before the C setup code runs. Set the controls the way your `sm_config_*` calls would, or put the settings in the source with `.in` / `.out` / `.set` / `.fifo` / `.mov_status` or a `config` pragma.
 - **Input latency.** A pin reaches the state machine 1 system clock late when its synchronizer is bypassed and 3 through the 2-flipflop synchronizer (the reset default). A state machine sees its own outputs 2 / 4 system clocks later, the same on RP2040 and RP2350.
 - **Clock divider.** One step is one state machine cycle. With a divider (the "Clock div" control, `.clock_div`, or `config clkdiv`), the input path still runs on the system clock, so input latency counted in state machine cycles gets shorter: at 2 the program sees its own output 1 / 2 cycles later, at 4 and above 1 / 1. Fractional dividers spread the extra clocks with a running total, as the hardware does.
-- **Pin writes.** OUT and MOV write OUT Count pins, SET writes SET Count pins, and a side-set wins over an OUT/SET to the same pin on the same cycle.
+- **Pin writes.** OUT and MOV write OUT Count pins, SET writes SET Count pins, and a side-set wins over an OUT/SET to the same pin on the same cycle. When several state machines write a pin on the same cycle, the highest-numbered one wins.
+- **IRQ flags between state machines.** A flag set or cleared by one state machine is seen by all of them, itself included, on the next cycle. If one sets and another clears a flag on the same cycle, the set wins.
 - **Assembler.** Expressions, `.define`, `public`, labels, `//` and `/* */` comments, `% c-sdk { ... %}` blocks, `.word`, `.origin`, `.pio_version`, and the same range checks as `pioasm`. RP2350-only features (`mov pindirs`, `wait jmppin`, `irq prev/next`, `mov rxfifo[]`) are rejected under `.pio_version 0`.
 - **EXEC.** `out exec` / `mov exec` run the instruction on the next cycle after the EXEC instruction's own delay. The datasheet says that delay is ignored, but on both chips it is not.
 - **Also supported:** FIFO joining and the RP2350 put/get FIFO modes, `mov x, status` on an IRQ flag.
 
 ## Simulator pragmas
 
-Comment lines starting with `; #pragma pio_sim` set up the simulation from the source. `pioasm` treats them as ordinary comments, so the same file still assembles for real hardware and the setup is saved with the code. Clocks are PIO clock cycles counted from reset. Numbers may be `.define` names. A pragma must be on a comment line of its own; a second `;` starts a normal comment.
+Comment lines starting with `; #pragma pio_sim` set up the simulation from the source. `pioasm` treats them as ordinary comments, so the same file still assembles for real hardware and the setup is saved with the code. Clocks are system clocks counted from reset (the same as state machine cycles at clock div 1). Numbers may be `.define` names. A pragma must be on a comment line of its own; a second `;` starts a normal comment.
 
 ### Pin waveform
 
@@ -100,11 +102,29 @@ Syntax: `config <name> <value> [<name> <value> ...]`
 
 Settings the source does not name keep whatever the controls show. A `config` pragma overrides a directive (`.out`, `.in`, ...) that sets the same thing.
 
+Scope: before the first `.program`, a `config` line applies to every state machine; inside a program, to the state machines running that program. `config sm <n> <name> <value> ...` applies to one state machine only, for example one program on several state machines with different pins.
+
+## Several state machines
+
+Put several `.program` blocks in one source, as `pioasm` allows. Each program goes into the shared 32-word instruction memory, at its `.origin` or else the first free addresses in source order, and its jumps and wrap points are relocated. Symbols defined before the first `.program` are global; labels and `.define`s inside a program are its own.
+
+By default the programs run on SM0, SM1, ... in source order. To choose:
+
+```
+; #pragma pio_sim sm 0 program uart_tx        ; SM0 runs uart_tx
+; #pragma pio_sim sm 1 program uart_tx        ; so does SM1 ...
+; #pragma pio_sim config sm 1 out_base 4      ; ... on other pins
+; #pragma pio_sim sm 2 off
+```
+
+With any `sm` line, the state machines it does not name stay off. A program no state machine runs is still loaded, so `out exec` or a jump can reach it.
+
+All state machines run on one time line. A step advances to the next system clock on which any of them runs, so state machines with different clock dividers interleave as on the chip. `irq ... rel` adds the state machine number to the flag index. The "State" panel lists every state machine (program, status, PC, instruction, X, Y, cycles); click a row or a tab to see that state machine's registers, FIFOs and settings. The program listing marks each state machine's PC, a breakpoint stops the run when any of them reaches it, and selecting a register in the timing chart shows it for every running state machine.
+
 ## Limitations
 
-- One state machine only (it runs as SM0, so the IRQ `rel` flag adds 0). A source with more than one `.program` block is rejected. IRQ event pragmas can stand in for a partner state machine.
+- One PIO block. `irq prev` / `irq next` address flags of neighbouring blocks, which exist but nothing else drives; IRQ event pragmas can stand in for them.
 - `OUT_STICKY` / `INLINE_OUT_EN`, GPIOs above 31 (`GPIOBASE`), system-level interrupts and DMA are not modelled.
-- The program is always loaded at address 0. `.origin` is accepted.
 - Instructions are accepted without a `.program` line, which `pioasm` would reject.
 
 ## License

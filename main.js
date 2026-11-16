@@ -89,6 +89,13 @@ const TIMING_REGS = [
 ];
 const programDisplay = document.getElementById('program-display');
 
+// The state machine whose details and settings are shown.
+let sel = 0;
+const cur = () => emulator.sms[sel];
+const smSummaryBody = document.querySelector('#sm-summary tbody');
+const smTabContainers = [document.getElementById('sm-tabs-state'), document.getElementById('sm-tabs-config')];
+let lastProgram = null;
+
 let runInterval = null;
 let runMode = null; // 'interval' | 'raf'
 const breakpoints = new Set();
@@ -298,6 +305,62 @@ is_high:
             autoPush: false, pushThresh: 32, autoPull: false, pullThresh: 32
         }
     },
+    pingpong: {
+        code: `; Two state machines handing control back and forth (issue #3).
+; SM0 runs ping_sm0 and SM1 runs pong_sm1: programs go to SM0, SM1, ... in
+; source order unless '; #pragma pio_sim sm <n> program <name>' says otherwise.
+
+.program ping_sm0
+; #pragma pio_sim config set_base 0 set_count 1
+.wrap_target
+    set pins, 1        ; SM0 work: pulse GPIO 0
+    set pins, 0
+    irq set 0          ; wake SM1
+    wait 1 irq 1       ; stall until SM1 raises IRQ 1 (clears it)
+.wrap
+
+.program pong_sm1
+; #pragma pio_sim config set_base 1 set_count 1
+.wrap_target
+    wait 1 irq 0       ; stall until SM0 raises IRQ 0 (clears it)
+    set pins, 1        ; SM1 work: pulse GPIO 1
+    set pins, 0
+    irq set 1          ; hand control back to SM0
+.wrap`,
+        config: {
+            outBase: 0, setBase: 0, sidesetBase: 0, inBase: 0, jmpPin: 0,
+            inShiftDir: 'right', outShiftDir: 'right',
+            autoPush: false, pushThresh: 32, autoPull: false, pullThresh: 32
+        }
+    },
+    shared_program: {
+        code: `; One program on three state machines. 'irq ... rel' adds the state
+; machine number to the flag index, so each copy talks to its neighbour,
+; and 'config sm <n>' gives each copy its own pin.
+;
+; #pragma pio_sim sm 0 program relay
+; #pragma pio_sim sm 1 program relay
+; #pragma pio_sim sm 2 program relay
+; #pragma pio_sim config sm 0 set_base 0
+; #pragma pio_sim config sm 1 set_base 1
+; #pragma pio_sim config sm 2 set_base 2
+; Start the chain: SM0 waits on IRQ 4, so raise it at clock 2.
+; #pragma pio_sim irq set 4 delay 2
+
+.program relay
+; #pragma pio_sim config set_count 1
+.wrap_target
+    wait 1 irq 4 rel   ; SM n waits on flag 4+n
+    set pins, 1 [3]
+    set pins, 0
+    irq set 5 rel      ; and wakes SM n+1 (flag 4+n+1; SM2 wakes flag 7)
+.wrap`,
+        config: {
+            outBase: 0, setBase: 0, sidesetBase: 0, inBase: 0, jmpPin: 0,
+            inShiftDir: 'right', outShiftDir: 'right',
+            autoPush: false, pushThresh: 32, autoPull: false, pullThresh: 32
+        }
+    },
     irq_handshake: {
         code: `.program ping
 
@@ -331,9 +394,15 @@ exampleSelect.addEventListener('change', () => {
         const ex = examples[key];
         codeEditor.value = ex.code;
 
-        // Every control is set here, so nothing is left over from the
+        // Every state machine's settings go back to reset values and the
+        // example's settings go to SM0, so nothing is left over from the
         // previous source for applyProgramConfig to undo.
-        settingsFromDirectives = new Set();
+        settingsFromDirectives = [new Set(), new Set(), new Set(), new Set()];
+        for (const sm of emulator.sms) {
+            Object.assign(sm, PIO_SM_CONFIG_DEFAULTS);
+            sm.setFifoMode('txrx');
+        }
+        selectSm(0, false);
         cfgOutBase.value = ex.config.outBase;
         // Anything an example does not mention goes back to its reset value.
         cfgOutCount.value = ex.config.outCount !== undefined ? ex.config.outCount : 0;
@@ -371,35 +440,81 @@ function readSetting(input, lo, hi, fallback) {
     return v;
 }
 
+// The controls show the selected state machine's settings.
 function updateConfig() {
-    emulator.outBase = readSetting(cfgOutBase, 0, 31, 0);
-    emulator.outCount = readSetting(cfgOutCount, 0, 32, 0);
-    emulator.setBase = readSetting(cfgSetBase, 0, 31, 0);
-    emulator.setCount = readSetting(cfgSetCount, 0, 5, 5);
-    emulator.sidesetBase = readSetting(cfgSidesetBase, 0, 31, 0);
-    emulator.inBase = readSetting(cfgInBase, 0, 31, 0);
-    emulator.inCount = readSetting(cfgInCount, 1, 32, 32);
-    emulator.jmpPin = readSetting(cfgJmpPin, 0, 31, 0);
-    emulator.setFifoMode(cfgFifoMode.value);
-    emulator.clkDiv = readClkDiv();
+    const sm = cur();
+    sm.outBase = readSetting(cfgOutBase, 0, 31, 0);
+    sm.outCount = readSetting(cfgOutCount, 0, 32, 0);
+    sm.setBase = readSetting(cfgSetBase, 0, 31, 0);
+    sm.setCount = readSetting(cfgSetCount, 0, 5, 5);
+    sm.sidesetBase = readSetting(cfgSidesetBase, 0, 31, 0);
+    sm.inBase = readSetting(cfgInBase, 0, 31, 0);
+    sm.inCount = readSetting(cfgInCount, 1, 32, 32);
+    sm.jmpPin = readSetting(cfgJmpPin, 0, 31, 0);
+    sm.setFifoMode(cfgFifoMode.value);
+    sm.clkDiv = readClkDiv();
+    sm.inShiftDir = cfgInShiftDir.value;
+    sm.outShiftDir = cfgOutShiftDir.value;
+    sm.autoPush = cfgAutoPush.checked;
+    sm.pushThresh = parseInt(cfgPushThresh.value);
+    sm.autoPull = cfgAutoPull.checked;
+    sm.pullThresh = parseInt(cfgPullThresh.value);
+    sm.statusSel = parseInt(cfgStatusSel.value);
+    sm.statusN = readSetting(cfgStatusN, 0, 31, 0);
     updateOutCountHint();
-    emulator.inShiftDir = cfgInShiftDir.value;
-    emulator.outShiftDir = cfgOutShiftDir.value;
-    emulator.autoPush = cfgAutoPush.checked;
-    emulator.pushThresh = parseInt(cfgPushThresh.value);
-    emulator.autoPull = cfgAutoPull.checked;
-    emulator.pullThresh = parseInt(cfgPullThresh.value);
-    emulator.statusSel = parseInt(cfgStatusSel.value);
-    emulator.statusN = readSetting(cfgStatusN, 0, 31, 0);
+}
+
+// Show a state machine's settings in the controls.
+function loadControls() {
+    const sm = cur();
+    cfgOutBase.value = sm.outBase;
+    cfgOutCount.value = sm.outCount;
+    cfgSetBase.value = sm.setBase;
+    cfgSetCount.value = sm.setCount;
+    cfgSidesetBase.value = sm.sidesetBase;
+    cfgInBase.value = sm.inBase;
+    cfgInCount.value = sm.inCount;
+    cfgJmpPin.value = sm.jmpPin;
+    cfgFifoMode.value = sm.fifoMode;
+    cfgClkDiv.value = sm.clkDiv;
+    cfgInShiftDir.value = sm.inShiftDir;
+    cfgOutShiftDir.value = sm.outShiftDir;
+    cfgAutoPush.checked = sm.autoPush;
+    cfgPushThresh.value = sm.pushThresh;
+    cfgAutoPull.checked = sm.autoPull;
+    cfgPullThresh.value = sm.pullThresh;
+    cfgStatusSel.value = sm.statusSel;
+    cfgStatusN.value = sm.statusN;
+    updateOutCountHint();
+}
+
+function selectSm(i, refresh = true) {
+    sel = i;
+    loadControls();
+    lastTxMessage = 'Not pushed yet';
+    lastRxMessage = 'Not read yet';
+    if (refresh) updateUI();
+}
+
+// Several state machines are in play: show the summary and the tabs.
+function multiSm() {
+    return emulator.enabledSms().length > 1 || sel !== 0 || (lastProgram && lastProgram.programs.length > 1);
 }
 
 // OUT_COUNT resets to 0 on hardware, which makes OUT/MOV to pins do nothing.
-// Point that out when the loaded program relies on it.
+// Point that out when the selected state machine's program relies on it.
 function updateOutCountHint() {
-    const usesOutPins = emulator.instructions.some(instr =>
-        (instr.type === 'OUT' || instr.type === 'MOV') &&
-        (instr.dest === 'pins' || instr.dest === 'pindirs'));
-    cfgOutCountHint.style.display = (usesOutPins && emulator.outCount === 0) ? '' : 'none';
+    const sm = cur();
+    const p = sm.program;
+    let usesOutPins = false;
+    if (sm.enabled && p) {
+        for (let a = p.offset; a < p.offset + (p.length || emulator.instructions.length); a++) {
+            const instr = emulator.instructions[a];
+            if (instr && (instr.type === 'OUT' || instr.type === 'MOV') &&
+                (instr.dest === 'pins' || instr.dest === 'pindirs')) usesOutPins = true;
+        }
+    }
+    cfgOutCountHint.style.display = (usesOutPins && sm.outCount === 0) ? '' : 'none';
 }
 
 function onConfigChange() {
@@ -423,14 +538,16 @@ function readClkDiv() {
 
 // With a divider, say what it does to input latency in state machine cycles.
 function updateClkDivNote() {
-    if (emulator.clkDiv === 1) {
+    const sm = cur();
+    if (sm.clkDiv === 1) {
         cfgClkDivNote.style.display = 'none';
         latencyNote.textContent = '';
         return;
     }
-    const l = emulator.inputLatency();
-    const frac = emulator.clkDiv !== Math.floor(emulator.clkDiv);
-    const text = `With clock div ${emulator.clkDiv}: an input change is seen ${l.external.bypassed} / ${l.external.synced} ` +
+    const l = sm.inputLatency();
+    const frac = sm.clkDiv !== Math.floor(sm.clkDiv);
+    const who = multiSm() ? `SM${sel}, ` : '';
+    const text = `With ${who}clock div ${sm.clkDiv}: an input change is seen ${l.external.bypassed} / ${l.external.synced} ` +
         `cycles later (bypassed / synchronized), the program's own output ${l.own.bypassed} / ${l.own.synced} cycles later` +
         (frac ? ' (± 1 with a fractional divider)' : '') + '.';
     cfgClkDivNote.textContent = text;
@@ -465,13 +582,13 @@ function parseUserNumber(input) {
 btnPushTx.addEventListener('click', () => {
     const val = parseUserNumber(txInput.value);
     if (!isNaN(val)) {
-        if (emulator.pushTx(val)) {
+        if (cur().pushTx(val)) {
             const hex = '0x' + (val >>> 0).toString(16).toUpperCase().padStart(8, '0');
             lastTxMessage = `Pushed: ${hex}`;
             updateUI();
             txInput.value = '';
         } else {
-            lastTxMessage = emulator.txCapacity() === 0
+            lastTxMessage = cur().txCapacity() === 0
                 ? 'TX FIFO is unavailable in this FIFO mode'
                 : 'TX FIFO is full';
             updateUI();
@@ -489,7 +606,7 @@ txInput.addEventListener('keydown', (e) => {
 });
 
 btnPopRx.addEventListener('click', () => {
-    const val = emulator.pullRx();
+    const val = cur().pullRx();
     if (val === null) {
         lastRxMessage = 'RX FIFO is empty';
         updateUI();
@@ -506,7 +623,7 @@ btnPopRx.addEventListener('click', () => {
 btnWriteRxReg.addEventListener('click', () => {
     const val = parseUserNumber(rxRegInput.value);
     if (isNaN(val)) return;
-    emulator.rxRegs[parseInt(rxRegIndex.value)] = val >>> 0;
+    cur().rxRegs[parseInt(rxRegIndex.value)] = val >>> 0;
     rxRegInput.value = '';
     updateUI();
 });
@@ -522,12 +639,32 @@ function assembleAndReset() {
         const source = codeEditor.value;
         const program = assembler.assemble(source);
         emulator.loadProgram(program);
-        emulator.programMap = program.programMap;
+        lastProgram = program;
+        if (!emulator.sms[sel].enabled) sel = emulator.sms.findIndex(sm => sm.enabled) >= 0 ? emulator.sms.findIndex(sm => sm.enabled) : 0;
 
         programDisplay.innerHTML = '';
         programDisplay.style.display = 'block';
 
-        program.programMap.forEach(item => {
+        // Every program in instruction memory order, with a name row when
+        // there is more than one.
+        const several = program.programs.length > 1;
+        const items = [];
+        for (const p of [...program.programs].sort((a, b) => a.offset - b.offset)) {
+            if (several) {
+                const runs = program.smPrograms.map((idx, i) => program.programs[idx] === p ? `SM${i}` : null).filter(x => x);
+                items.push({ header: `.program ${p.name}  —  ${runs.length ? runs.join(', ') : 'not running'}  (address ${p.offset}-${p.offset + p.length - 1})` });
+            }
+            items.push(...p.programMap);
+        }
+
+        items.forEach(item => {
+            if (item.header) {
+                const h = document.createElement('div');
+                h.className = 'program-header';
+                h.textContent = item.header;
+                programDisplay.appendChild(h);
+                return;
+            }
             const div = document.createElement('div');
             div.className = 'program-line';
             div.id = `prog-line-${item.pc}`;
@@ -550,10 +687,16 @@ function assembleAndReset() {
             });
 
             const codeSpan = document.createElement('span');
+            codeSpan.className = 'code';
             codeSpan.textContent = item.text;
+
+            // Which state machines are at this address.
+            const badges = document.createElement('span');
+            badges.className = 'pc-badges';
 
             div.appendChild(bpSpan);
             div.appendChild(pcSpan);
+            div.appendChild(badges);
             div.appendChild(codeSpan);
             programDisplay.appendChild(div);
         });
@@ -561,8 +704,8 @@ function assembleAndReset() {
         // Clear stale breakpoints when re-assembling; instruction mapping may differ.
         breakpoints.clear();
 
-        applyProgramConfig(program.config);
-        updateConfig();
+        applyProgramConfig(program);
+        loadControls();
 
         errorMessage.textContent = '';
         updateUI();
@@ -575,43 +718,37 @@ function assembleAndReset() {
 }
 
 // Settings named in the source — by directives (.in, .out, .set, .fifo,
-// .mov_status) or by `; #pragma pio_sim config` — are copied into the
-// controls on assemble. Other controls are left alone. A control that the
-// source set last time goes back to its hardware reset value once the line
-// is gone, so a deleted `.fifo tx` does not linger.
-const DIRECTIVE_SETTINGS = {
-    outBase: { reset: 0, apply: v => { cfgOutBase.value = v; } },
-    setBase: { reset: 0, apply: v => { cfgSetBase.value = v; } },
-    sidesetBase: { reset: 0, apply: v => { cfgSidesetBase.value = v; } },
-    inBase: { reset: 0, apply: v => { cfgInBase.value = v; } },
-    jmpPin: { reset: 0, apply: v => { cfgJmpPin.value = v; } },
-    outCount: { reset: 0, apply: v => { cfgOutCount.value = v; } },
-    outShiftDir: { reset: 'right', apply: v => { cfgOutShiftDir.value = v; } },
-    autoPull: { reset: false, apply: v => { cfgAutoPull.checked = v; } },
-    pullThresh: { reset: 32, apply: v => { cfgPullThresh.value = v; } },
-    inCount: { reset: 32, apply: v => { cfgInCount.value = v; } },
-    inShiftDir: { reset: 'right', apply: v => { cfgInShiftDir.value = v; } },
-    autoPush: { reset: false, apply: v => { cfgAutoPush.checked = v; } },
-    pushThresh: { reset: 32, apply: v => { cfgPushThresh.value = v; } },
-    setCount: { reset: 5, apply: v => { cfgSetCount.value = v; } },
-    fifoMode: { reset: 'txrx', apply: v => { cfgFifoMode.value = v; } },
-    clkDiv: { reset: 1, apply: v => { cfgClkDiv.value = v; } },
-    statusSel: { reset: 0, apply: v => { cfgStatusSel.value = v; } },
-    statusN: { reset: 0, apply: v => { cfgStatusN.value = v; } }
-};
-let settingsFromDirectives = new Set();
+// .mov_status, .clock_div) or by `; #pragma pio_sim config` — are applied
+// to each state machine on assemble. Other settings are left alone. A
+// setting that the source set last time goes back to its hardware reset
+// value once the line is gone, so a deleted `.fifo tx` does not linger.
+const DIRECTIVE_SETTINGS = Object.assign({}, PIO_SM_CONFIG_DEFAULTS, { fifoMode: 'txrx' });
+let settingsFromDirectives = [new Set(), new Set(), new Set(), new Set()];
 
-function applyProgramConfig(config) {
-    const now = new Set();
-    for (const key of Object.keys(DIRECTIVE_SETTINGS)) {
-        if (config[key] !== undefined) {
-            DIRECTIVE_SETTINGS[key].apply(config[key]);
-            now.add(key);
-        } else if (settingsFromDirectives.has(key)) {
-            DIRECTIVE_SETTINGS[key].apply(DIRECTIVE_SETTINGS[key].reset);
+function applyProgramConfig(program) {
+    emulator.sms.forEach((sm, i) => {
+        const config = program.smConfigs[i] || {};
+        const now = new Set();
+        for (const key of Object.keys(DIRECTIVE_SETTINGS)) {
+            let value;
+            if (config[key] !== undefined) {
+                value = config[key];
+                now.add(key);
+            } else if (settingsFromDirectives[i].has(key)) {
+                value = DIRECTIVE_SETTINGS[key];
+            } else {
+                continue;
+            }
+            if (key === 'fifoMode') sm.setFifoMode(value);
+            else sm[key] = value;
         }
-    }
-    settingsFromDirectives = now;
+        settingsFromDirectives[i] = now;
+    });
+}
+
+// A breakpoint stops the run when any state machine reaches its address.
+function atBreakpoint() {
+    return emulator.enabledSms().some(sm => breakpoints.has(sm.pc));
 }
 
 function toggleBreakpoint(pc) {
@@ -647,15 +784,15 @@ function run() {
             if (runMode !== 'raf') return;
             for (let i = 0; i < STEPS_PER_FRAME; i++) {
                 emulator.step();
-                if (emulator.status === 'error') break;
-                if (breakpoints.has(emulator.pc)) {
+                if (emulator.error) break;
+                if (atBreakpoint()) {
                     updateUI();
                     stop();
                     return;
                 }
             }
             updateUI();
-            if (emulator.status === 'error') {
+            if (emulator.error) {
                 stop();
                 errorMessage.textContent = emulator.error;
                 return;
@@ -668,12 +805,12 @@ function run() {
         runInterval = setInterval(() => {
             emulator.step();
             updateUI();
-            if (emulator.status === 'error') {
+            if (emulator.error) {
                 stop();
                 errorMessage.textContent = emulator.error;
                 return;
             }
-            if (breakpoints.has(emulator.pc)) {
+            if (atBreakpoint()) {
                 stop();
             }
         }, period);
@@ -697,6 +834,7 @@ function stop() {
 function step() {
     stop();
     emulator.step();
+    if (emulator.error) errorMessage.textContent = emulator.error;
     updateUI(true);
 }
 
@@ -707,9 +845,69 @@ function reset() {
     updateUI();
 }
 
+const hex8 = v => '0x' + (v >>> 0).toString(16).toUpperCase().padStart(8, '0');
+
+// Short text of the instruction a state machine is at.
+function instrText(addr) {
+    const el = document.getElementById(`prog-line-${addr}`);
+    if (!el) return emulator.instructions[addr] ? '' : '(empty: jmp 0)';
+    const codeEl = el.querySelector('.code');
+    const code = codeEl ? codeEl.textContent : '';
+    return code.split(';')[0].trim();
+}
+
+function updateSmPanels() {
+    const multi = multiSm();
+    document.querySelectorAll('.multi-sm-only').forEach(el => { el.style.display = multi ? '' : 'none'; });
+    document.querySelectorAll('.sm-suffix').forEach(el => { el.textContent = multi ? ` (SM${sel})` : ''; });
+    if (!multi) return;
+
+    smSummaryBody.innerHTML = '';
+    emulator.sms.forEach((sm, i) => {
+        const tr = document.createElement('tr');
+        if (i === sel) tr.classList.add('selected');
+        if (!sm.enabled) tr.classList.add('off');
+        const status = sm.enabled ? sm.status : 'off';
+        const cells = sm.enabled
+            ? [`SM${i}`, sm.program ? sm.program.name : '', null, sm.pc, instrText(sm.pc), hex8(sm.x), hex8(sm.y), sm.cycles]
+            : [`SM${i}`, '', null, '', '', '', '', ''];
+        cells.forEach((c, k) => {
+            const td = document.createElement('td');
+            if (k === 2) {
+                const span = document.createElement('span');
+                span.className = `sm-status ${status}`;
+                span.textContent = status.toUpperCase();
+                td.appendChild(span);
+            } else {
+                td.textContent = c;
+            }
+            if (k === 4) { td.className = 'instr'; td.title = c; }
+            tr.appendChild(td);
+        });
+        tr.addEventListener('click', () => selectSm(i));
+        smSummaryBody.appendChild(tr);
+    });
+
+    for (const box of smTabContainers) {
+        box.innerHTML = '';
+        emulator.sms.forEach((sm, i) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'sm-tab' + (i === sel ? ' selected' : '') + (sm.enabled ? '' : ' off');
+            b.textContent = `SM${i}`;
+            b.title = sm.enabled ? `SM${i}: ${sm.program ? sm.program.name : ''}` : `SM${i}: not running`;
+            b.addEventListener('click', () => selectSm(i));
+            box.appendChild(b);
+        });
+    }
+}
+
 function updateUI(isStep = false) {
-    let displayStatus = emulator.status.toUpperCase();
-    if (!runInterval && emulator.status === 'running') {
+    const sm = cur();
+    updateSmPanels();
+
+    let displayStatus = emulator.error ? 'ERROR' : (sm.enabled ? sm.status.toUpperCase() : 'OFF');
+    if (!runInterval && sm.status === 'running' && !emulator.error) {
         displayStatus = isStep ? 'STEP' : 'STOPPED';
     }
 
@@ -732,21 +930,22 @@ function updateUI(isStep = false) {
         statusIndicator.style.color = 'white';
     }
 
-    regPc.textContent = emulator.pc;
+    regPc.textContent = sm.pc;
     regClock.textContent = emulator.clock;
-    regSysclk.textContent = emulator.clkDiv === 1 ? '' : ` (system clock ${emulator.sysclk})`;
+    const anyDivider = emulator.enabledSms().some(s => s.clkDiv !== 1);
+    regSysclk.textContent = anyDivider ? ` (system clock ${emulator.sysclk})` : '';
     updateClkDivNote();
-    regX.textContent = '0x' + emulator.x.toString(16).toUpperCase().padStart(8, '0');
-    regY.textContent = '0x' + emulator.y.toString(16).toUpperCase().padStart(8, '0');
-    regOsr.textContent = '0x' + emulator.osr.toString(16).toUpperCase().padStart(8, '0');
-    regOsrCount.textContent = emulator.osrCount;
-    regIsr.textContent = '0x' + emulator.isr.toString(16).toUpperCase().padStart(8, '0');
-    regIsrCount.textContent = emulator.isrCount;
+    regX.textContent = hex8(sm.x);
+    regY.textContent = hex8(sm.y);
+    regOsr.textContent = hex8(sm.osr);
+    regOsrCount.textContent = sm.osrCount;
+    regIsr.textContent = hex8(sm.isr);
+    regIsrCount.textContent = sm.isrCount;
 
-    txFifoList.innerHTML = emulator.txFifo.map(v => `<li>0x${v.toString(16).toUpperCase()}</li>`).join('');
+    txFifoList.innerHTML = sm.txFifo.map(v => `<li>0x${v.toString(16).toUpperCase()}</li>`).join('');
 
     // In the put/get FIFO modes the RX FIFO storage is four registers.
-    const fifoMode = emulator.fifoMode;
+    const fifoMode = sm.fifoMode;
     const rxAsRegs = fifoMode === 'txput' || fifoMode === 'txget' || fifoMode === 'putget';
     rxFifoTitle.textContent = rxAsRegs ? 'RX FIFO registers' : 'RX FIFO';
     rxPopControls.style.display = rxAsRegs ? 'none' : 'flex';
@@ -758,10 +957,10 @@ function updateUI(isStep = false) {
             txget: 'Written by the system, read by the program (mov osr, rxfifo[n]).',
             putget: 'Read and written by the program only.'
         }[fifoMode];
-        rxFifoList.innerHTML = emulator.rxRegs
+        rxFifoList.innerHTML = sm.rxRegs
             .map((v, i) => `<li>[${i}] 0x${(v >>> 0).toString(16).toUpperCase().padStart(8, '0')}</li>`).join('');
     } else {
-        rxFifoList.innerHTML = emulator.rxFifo.map(v => `<li>0x${v.toString(16).toUpperCase()}</li>`).join('');
+        rxFifoList.innerHTML = sm.rxFifo.map(v => `<li>0x${v.toString(16).toUpperCase()}</li>`).join('');
     }
     txPushResult.textContent = lastTxMessage;
     rxPopResult.textContent = lastRxMessage;
@@ -823,8 +1022,22 @@ function updateUI(isStep = false) {
 
     const activeLines = programDisplay.querySelectorAll('.program-line.active');
     activeLines.forEach(el => el.classList.remove('active'));
+    programDisplay.querySelectorAll('.pc-badges').forEach(el => { el.innerHTML = ''; });
 
-    const currentLine = document.getElementById(`prog-line-${emulator.pc}`);
+    // Every running state machine's PC, as a badge, when there are several.
+    if (multiSm()) {
+        emulator.sms.forEach((s, i) => {
+            if (!s.enabled) return;
+            const line = document.getElementById(`prog-line-${s.pc}`);
+            if (!line) return;
+            const badge = document.createElement('span');
+            badge.className = `pc-badge sm${i}`;
+            badge.textContent = `SM${i}`;
+            line.querySelector('.pc-badges').appendChild(badge);
+        });
+    }
+
+    const currentLine = sm.enabled ? document.getElementById(`prog-line-${sm.pc}`) : null;
     if (currentLine) {
         currentLine.classList.add('active');
         const parent = currentLine.parentElement;
@@ -848,14 +1061,12 @@ function drawTimingChart() {
     if (selectedTimingPins.size > 0) {
         pinsToShow = Array.from(selectedTimingPins);
     } else {
-        const ssBase = emulator.sidesetBase;
-        const ssCount = emulator.sidesetCount;
-        for (let i = 0; i < ssCount; i++) {
-            pinsToShow.push(ssBase + i);
-        }
-        const outBase = emulator.outBase;
-        for (let i = 0; i < 4; i++) {
-            pinsToShow.push(outBase + i);
+        // Every running state machine's side-set, OUT and SET pins (the
+        // first four of each group), and the stimulated pins.
+        for (const s of emulator.enabledSms()) {
+            for (let i = 0; i < s.sidesetCount; i++) pinsToShow.push((s.sidesetBase + i) & 31);
+            for (let i = 0; i < 4; i++) pinsToShow.push((s.outBase + i) & 31);
+            for (let i = 0; i < Math.min(s.setCount, 4); i++) pinsToShow.push((s.setBase + i) & 31);
         }
         for (const stim of emulator.stimuli) {
             pinsToShow.push(stim.pin);
@@ -877,16 +1088,41 @@ function drawTimingChart() {
         bit: pin,
         color: isStimPin(pin) ? '#ef6c00' : '#007acc'
     }));
-    const irqEventMask = emulator.irqEventMask();
+    // IRQ flags scheduled by a pragma or used by the running programs.
+    let irqMask = emulator.irqEventMask();
+    for (const s of emulator.enabledSms()) {
+        const p = s.program;
+        if (!p) continue;
+        for (let a = p.offset; a < p.offset + (p.length || 32); a++) {
+            const instr = emulator.instructions[a];
+            if (!instr || instr.prev || instr.next) continue;
+            if (instr.type === 'IRQ' || (instr.type === 'WAIT' && instr.source === 'irq')) {
+                let index = instr.index & 7;
+                if (instr.rel) index = (index & 4) | ((index + s.index) & 3);
+                irqMask |= 1 << index;
+            }
+        }
+    }
     const irqsToShow = [];
     for (let i = 0; i < 8; i++) {
-        if ((irqEventMask >> i) & 1) {
+        if ((irqMask >> i) & 1) {
             irqsToShow.push(i);
             bitRows.push({ label: `IRQ ${i}`, key: 'irq', bit: i, color: '#7b1fa2' });
         }
     }
 
-    const regsToShow = TIMING_REGS.filter(r => selectedTimingRegs.has(r.key));
+    // Register rows, one per running state machine when there are several.
+    const running = emulator.enabledSms();
+    const regsToShow = [];
+    for (const r of TIMING_REGS.filter(r => selectedTimingRegs.has(r.key))) {
+        for (const s of running) {
+            regsToShow.push({
+                label: running.length > 1 ? `SM${s.index} ${r.label}` : r.label,
+                format: r.format,
+                get: h => (h.sms && h.sms[s.index]) ? h.sms[s.index][r.key] : undefined
+            });
+        }
+    }
 
     if (pinsToShow.length > 0) {
         const min = pinsToShow[0];
@@ -1017,7 +1253,7 @@ function drawTimingChart() {
         let segStart = 0;
         for (let t = 1; t <= visibleHistory.length; t++) {
             const ended = (t === visibleHistory.length) ||
-                          (visibleHistory[t][reg.key] !== visibleHistory[t - 1][reg.key]);
+                          (reg.get(visibleHistory[t]) !== reg.get(visibleHistory[t - 1]));
             if (!ended) continue;
 
             const xStart = segStart * stepX;
@@ -1037,7 +1273,8 @@ function drawTimingChart() {
                 ctx.stroke();
             }
 
-            const text = reg.format(visibleHistory[segStart][reg.key]);
+            const value = reg.get(visibleHistory[segStart]);
+            const text = value === undefined ? '' : reg.format(value);
             const segWidth = xEnd - xStart;
             const segHeight = yBot - yTop;
             const visStart = xStart;
