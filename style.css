@@ -254,6 +254,12 @@ button:disabled {
     color: #555;
 }
 
+.config-note {
+    width: 100%;
+    font-size: 0.8em;
+    color: #555;
+}
+
 .config-hint {
     width: 100%;
     font-size: 0.8em;

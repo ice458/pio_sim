@@ -47,6 +47,10 @@ const cfgInBase = document.getElementById('cfg-in-base');
 const cfgInCount = document.getElementById('cfg-in-count');
 const cfgJmpPin = document.getElementById('cfg-jmp-pin');
 const cfgFifoMode = document.getElementById('cfg-fifo-mode');
+const cfgClkDiv = document.getElementById('cfg-clkdiv');
+const cfgClkDivNote = document.getElementById('cfg-clkdiv-note');
+const regSysclk = document.getElementById('reg-sysclk');
+const latencyNote = document.getElementById('latency-note');
 const cfgInShiftDir = document.getElementById('cfg-in-shift-dir');
 const cfgOutShiftDir = document.getElementById('cfg-out-shift-dir');
 const cfgAutoPush = document.getElementById('cfg-auto-push');
@@ -335,6 +339,7 @@ exampleSelect.addEventListener('change', () => {
         cfgOutCount.value = ex.config.outCount !== undefined ? ex.config.outCount : 0;
         cfgInCount.value = ex.config.inCount !== undefined ? ex.config.inCount : 32;
         cfgFifoMode.value = ex.config.fifoMode !== undefined ? ex.config.fifoMode : 'txrx';
+        cfgClkDiv.value = ex.config.clkDiv !== undefined ? ex.config.clkDiv : 1;
         cfgSetBase.value = ex.config.setBase;
         if (ex.config.setCount !== undefined) {
             cfgSetCount.value = ex.config.setCount;
@@ -376,6 +381,7 @@ function updateConfig() {
     emulator.inCount = readSetting(cfgInCount, 1, 32, 32);
     emulator.jmpPin = readSetting(cfgJmpPin, 0, 31, 0);
     emulator.setFifoMode(cfgFifoMode.value);
+    emulator.clkDiv = readClkDiv();
     updateOutCountHint();
     emulator.inShiftDir = cfgInShiftDir.value;
     emulator.outShiftDir = cfgOutShiftDir.value;
@@ -404,6 +410,33 @@ function onConfigChange() {
 cfgOutCount.addEventListener('change', onConfigChange);
 cfgInCount.addEventListener('change', onConfigChange);
 cfgFifoMode.addEventListener('change', onConfigChange);
+cfgClkDiv.addEventListener('change', onConfigChange);
+
+// CLKDIV is 16.8 fixed point; INT 0 would mean 65536, which is not offered.
+function readClkDiv() {
+    let v = parseFloat(cfgClkDiv.value);
+    if (isNaN(v)) v = 1;
+    v = Math.min(65535, Math.max(1, Math.floor(v * 256) / 256));
+    if (String(v) !== cfgClkDiv.value) cfgClkDiv.value = v;
+    return v;
+}
+
+// With a divider, say what it does to input latency in state machine cycles.
+function updateClkDivNote() {
+    if (emulator.clkDiv === 1) {
+        cfgClkDivNote.style.display = 'none';
+        latencyNote.textContent = '';
+        return;
+    }
+    const l = emulator.inputLatency();
+    const frac = emulator.clkDiv !== Math.floor(emulator.clkDiv);
+    const text = `With clock div ${emulator.clkDiv}: an input change is seen ${l.external.bypassed} / ${l.external.synced} ` +
+        `cycles later (bypassed / synchronized), the program's own output ${l.own.bypassed} / ${l.own.synced} cycles later` +
+        (frac ? ' (± 1 with a fractional divider)' : '') + '.';
+    cfgClkDivNote.textContent = text;
+    cfgClkDivNote.style.display = '';
+    latencyNote.textContent = text;
+}
 cfgOutBase.addEventListener('change', updateConfig);
 cfgSetBase.addEventListener('change', updateConfig);
 cfgSetCount.addEventListener('change', updateConfig);
@@ -562,6 +595,7 @@ const DIRECTIVE_SETTINGS = {
     pushThresh: { reset: 32, apply: v => { cfgPushThresh.value = v; } },
     setCount: { reset: 5, apply: v => { cfgSetCount.value = v; } },
     fifoMode: { reset: 'txrx', apply: v => { cfgFifoMode.value = v; } },
+    clkDiv: { reset: 1, apply: v => { cfgClkDiv.value = v; } },
     statusSel: { reset: 0, apply: v => { cfgStatusSel.value = v; } },
     statusN: { reset: 0, apply: v => { cfgStatusN.value = v; } }
 };
@@ -700,6 +734,8 @@ function updateUI(isStep = false) {
 
     regPc.textContent = emulator.pc;
     regClock.textContent = emulator.clock;
+    regSysclk.textContent = emulator.clkDiv === 1 ? '' : ` (system clock ${emulator.sysclk})`;
+    updateClkDivNote();
     regX.textContent = '0x' + emulator.x.toString(16).toUpperCase().padStart(8, '0');
     regY.textContent = '0x' + emulator.y.toString(16).toUpperCase().padStart(8, '0');
     regOsr.textContent = '0x' + emulator.osr.toString(16).toUpperCase().padStart(8, '0');

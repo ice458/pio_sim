@@ -161,6 +161,7 @@ class PioAssembler {
         this.dirOut = null;
         this.dirSet = null;
         this.movStatus = null;
+        this.clockDiv = null;
         this.pragmas = [];
 
         const rawLines = sourceCode.replace(/\r/g, '').split('\n');
@@ -539,12 +540,13 @@ class PioAssembler {
                 // Options for pioasm's output generators; nothing to simulate.
                 break;
             case '.clock_div': {
-                // The simulator counts state machine cycles, so the divider
-                // only stretches real time. Validate it and move on.
+                // Applied as the state machine's clock divider. It changes
+                // input latency, counted in state machine cycles.
                 const t = this.peek();
                 if (t.t !== 'int' && t.t !== 'float') throw this.unexpected('a clock divider');
                 this.pos++;
                 if (t.v < 1 || t.v >= 65536) throw new Error('clock divider must be between 1 and 65535');
+                this.clockDiv = t.v;
                 break;
             }
             case '.fifo': {
@@ -933,6 +935,10 @@ class PioAssembler {
         if (this.fifo !== 'txrx') {
             config.fifoMode = this.fifo;
         }
+        if (this.clockDiv !== null) {
+            // CLKDIV holds 16 integer and 8 fractional bits.
+            config.clkDiv = Math.floor(this.clockDiv * 256) / 256;
+        }
         if (this.movStatus) atLine(this.movStatus.line, () => {
             const n = this.resolve(this.movStatus.n);
             if (this.movStatus.type === 'irq') {
@@ -1186,6 +1192,14 @@ class PioAssembler {
                     throw new Error(`#pragma pio_sim: config ${name} must be one of ${Object.keys(def.values).join(', ')}, got '${raw}'`);
                 }
                 value = def.values[k];
+            } else if (def.decimal) {
+                if (!/^\d+(\.\d+)?$/.test(raw)) {
+                    throw new Error(`#pragma pio_sim: config ${name} must be a number such as 2 or 2.5, got '${raw}'`);
+                }
+                value = Math.floor(parseFloat(raw) * 256) / 256;
+                if (value < def.min || value > def.max) {
+                    throw new Error(`#pragma pio_sim: config ${name} must be ${def.min}-${def.max}, got ${raw}`);
+                }
             } else {
                 value = this.pragmaNumber(raw, `config ${name}`, usage);
                 if (value < def.min || value > def.max) {
@@ -1215,5 +1229,6 @@ PioAssembler.CONFIG_PRAGMA = {
     pull_thresh: { key: 'pullThresh', min: 1, max: 32 },
     status_sel: { key: 'statusSel', values: { tx: 0, rx: 1, irq: 2 } },
     status_n: { key: 'statusN', min: 0, max: 31 },
-    fifo: { key: 'fifoMode', values: { txrx: 'txrx', tx: 'tx', rx: 'rx', txput: 'txput', txget: 'txget', putget: 'putget' } }
+    fifo: { key: 'fifoMode', values: { txrx: 'txrx', tx: 'tx', rx: 'rx', txput: 'txput', txget: 'txget', putget: 'putget' } },
+    clkdiv: { key: 'clkDiv', min: 1, max: 65535, decimal: true }
 };

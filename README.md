@@ -27,13 +27,15 @@ You can use the live version hosted here:
 
 ## How closely it follows the hardware
 
-The emulator follows the PIO chapters of the RP2040 and RP2350 datasheets, and the assembler follows `pioasm` from the pico-sdk.
+The emulator follows the PIO chapters of the RP2040 and RP2350 datasheets, and the assembler follows `pioasm` from the pico-sdk. Cycle timing has also been compared with a real RP2040 and RP2350 (a per-cycle pin trace and the final state of about 30 test programs, captured on the chip); where the hardware and the datasheet disagree, the simulator follows the hardware.
 
 - **Settings start at the hardware reset values.** In particular OUT Count is 0, so `out pins` writes nothing until you set it, as on a real chip before the C setup code runs. Set the controls the way your `sm_config_*` calls would, or put the settings in the source with `.in` / `.out` / `.set` / `.fifo` / `.mov_status` or a `config` pragma.
-- **Input latency.** A pin reaches the state machine 1 cycle late when its synchronizer is bypassed and 3 cycles late through the 2-flipflop synchronizer (the reset default). A state machine sees its own outputs 2 / 4 cycles later.
+- **Input latency.** A pin reaches the state machine 1 system clock late when its synchronizer is bypassed and 3 through the 2-flipflop synchronizer (the reset default). A state machine sees its own outputs 2 / 4 system clocks later, the same on RP2040 and RP2350.
+- **Clock divider.** One step is one state machine cycle. With a divider (the "Clock div" control, `.clock_div`, or `config clkdiv`), the input path still runs on the system clock, so input latency counted in state machine cycles gets shorter: at 2 the program sees its own output 1 / 2 cycles later, at 4 and above 1 / 1. Fractional dividers spread the extra clocks with a running total, as the hardware does.
 - **Pin writes.** OUT and MOV write OUT Count pins, SET writes SET Count pins, and a side-set wins over an OUT/SET to the same pin on the same cycle.
 - **Assembler.** Expressions, `.define`, `public`, labels, `//` and `/* */` comments, `% c-sdk { ... %}` blocks, `.word`, `.origin`, `.pio_version`, and the same range checks as `pioasm`. RP2350-only features (`mov pindirs`, `wait jmppin`, `irq prev/next`, `mov rxfifo[]`) are rejected under `.pio_version 0`.
-- **Also supported:** `out exec` / `mov exec`, FIFO joining and the RP2350 put/get FIFO modes, `mov x, status` on an IRQ flag.
+- **EXEC.** `out exec` / `mov exec` run the instruction on the next cycle after the EXEC instruction's own delay. The datasheet says that delay is ignored, but on both chips it is not.
+- **Also supported:** FIFO joining and the RP2350 put/get FIFO modes, `mov x, status` on an IRQ flag.
 
 ## Simulator pragmas
 
@@ -68,7 +70,7 @@ Raise or clear an IRQ flag at given clocks, the way another state machine's `irq
 Syntax: `irq set|clear <n> [delay <clocks>] [repeat <clocks>] [count <n>]`
 
 - The first event is at clock `delay` (default 0). With `repeat` it recurs every that many clocks, forever or `count` times.
-- The instruction executed on that clock already sees the new flag value.
+- The instruction executed on that clock already sees the new flag value. A real partner state machine is seen one cycle after it executes `irq`, so a partner instruction on cycle N corresponds to `delay N+1`.
 - The program can still set and clear the flag itself, and so can you by clicking it. Scheduled flags are added to the timing chart.
 
 ### Settings
@@ -94,13 +96,13 @@ Syntax: `config <name> <value> [<name> <value> ...]`
 | `status_sel` | `tx`, `rx`, `irq` |
 | `status_n` | 0-31 |
 | `fifo` | `txrx`, `tx`, `rx`, `txput`, `txget`, `putget` |
+| `clkdiv` | 1-65535, fractions such as `2.5` allowed (1/256 steps) |
 
 Settings the source does not name keep whatever the controls show. A `config` pragma overrides a directive (`.out`, `.in`, ...) that sets the same thing.
 
 ## Limitations
 
 - One state machine only (it runs as SM0, so the IRQ `rel` flag adds 0). A source with more than one `.program` block is rejected. IRQ event pragmas can stand in for a partner state machine.
-- No clock divider: one step is one state machine cycle. `.clock_div` is accepted and ignored.
 - `OUT_STICKY` / `INLINE_OUT_EN`, GPIOs above 31 (`GPIOBASE`), system-level interrupts and DMA are not modelled.
 - The program is always loaded at address 0. `.origin` is accepted.
 - Instructions are accepted without a `.program` line, which `pioasm` would reject.

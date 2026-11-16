@@ -36,8 +36,19 @@ class PioEmulator {
         // RX FIFO storage, used as four registers in the put/get FIFO modes.
         this.rxRegs = [0, 0, 0, 0];
 
-        this.clock = 0;
+        this.clock = 0;     // state machine cycles since reset
         this.delay = 0;
+        // Clock divider (CLKDIV, 16.8 fixed point; resets to 1). The state
+        // machine runs on one system clock in `clkDiv`; `sysclk` is the
+        // system clock of the current cycle. The input path is clocked by
+        // the system clock, so input latency in state machine cycles
+        // shrinks as the divider grows (measured on RP2040 and RP2350).
+        this.clkDiv = 1;
+        this.sysclk = 0;
+        this.clkDivAcc = 0;
+        this.clkDivCarry = false;
+        // Pad levels of the last few cycles, for the input path.
+        this.padRecords = [];
         // Instruction latched by OUT EXEC / MOV EXEC, run on the next cycle.
         this.execLatch = null;
 
@@ -173,9 +184,11 @@ class PioEmulator {
 
     // What the state machine observes on GPIO `pin` this cycle. There is a
     // register stage between the input mapping and the state machine, behind
-    // the optional 2-FF synchroniser, so this lags the pad by one cycle when
-    // bypassed and three when synchronised. A state machine therefore sees
-    // its own outputs two / four cycles later (RP2040 datasheet §3.5.6.1).
+    // the optional 2-FF synchroniser, so this lags the pad by one system
+    // clock when bypassed and three when synchronised. Output writes reach
+    // the pad one system clock after the instruction, so a state machine
+    // sees its own outputs two / four system clocks later (RP2040 datasheet
+    // §3.5.6.1; measured the same on RP2350).
     getPinState(pin) {
         return (this.inputsSeen >>> (pin & 0x1F)) & 1;
     }
@@ -209,13 +222,58 @@ class PioEmulator {
         else this.pins = reg >>> 0;
     }
 
-    // Advance the input path by one clock. `pad` is the pad level during the
-    // cycle that just ended, i.e. before this cycle's output writes land.
-    endCycle(pad) {
+    // System clocks until the next state machine cycle. A fractional divider
+    // adds one clock to some periods, with a running total of the fraction
+    // (first-order delta-sigma, §11.5.5).
+    nextPeriod() {
+        let n = Math.floor(this.clkDiv);
+        const frac = Math.floor((this.clkDiv - n) * 256);
+        if (n < 1) n = 1;
+        const period = n + (this.clkDivCarry ? 1 : 0);
+        this.clkDivAcc += frac;
+        this.clkDivCarry = this.clkDivAcc >= 256;
+        this.clkDivAcc &= 255;
+        return period;
+    }
+
+    // Pad levels at system clock `s`. Within cycle c (starting at system
+    // clock T(c)), the pads show the earlier outputs at T(c) and this
+    // cycle's output writes from T(c) + 1 on. Before the first cycle: 0.
+    padAt(s) {
+        for (let i = this.padRecords.length - 1; i >= 0; i--) {
+            const r = this.padRecords[i];
+            if (r.t === s) return r.start;
+            if (r.t < s) return r.end;
+        }
+        return 0;
+    }
+
+    // Input latency in state machine cycles at the current divider, for
+    // display: an outside level change, and the state machine's own output.
+    // With a fractional divider it can vary by one cycle with the phase.
+    inputLatency() {
+        const c = sysclks => Math.max(1, Math.ceil(sysclks / this.clkDiv));
+        return {
+            external: { bypassed: c(1), synced: c(3) },
+            own: { bypassed: c(2), synced: c(4) }
+        };
+    }
+
+    // End a state machine cycle. `padStart` is the pad level at the start
+    // of the cycle, before its output writes land.
+    endCycle(padStart) {
+        const padEnd = this.getAllPinStates();
+        this.padRecords.push({ t: this.sysclk, start: padStart >>> 0, end: padEnd });
+        if (this.padRecords.length > 8) this.padRecords.shift();
+        if (this.history.length > 0) this.history[this.history.length - 1].padEnd = padEnd;
+
+        // The input path at the next cycle's system clock t.
+        this.sysclk += this.nextPeriod();
+        const t = this.sysclk;
         const bypass = this.inputSyncBypass >>> 0;
-        this.inputsSeen = ((pad & bypass) | (this.inputsFf2 & ~bypass)) >>> 0;
-        this.inputsFf2 = this.inputsFf1 >>> 0;
-        this.inputsFf1 = pad >>> 0;
+        this.inputsFf1 = this.padAt(t - 1);
+        this.inputsFf2 = this.padAt(t - 2);
+        this.inputsSeen = ((this.padAt(t - 1) & bypass) | (this.padAt(t - 3) & ~bypass)) >>> 0;
 
         this.clock++;
         // Show the level the next cycle will see.
@@ -328,6 +386,8 @@ class PioEmulator {
 
         this.history.push({
             clock: this.clock,
+            sysclk: this.sysclk,
+            pad,
             pins: this.pins,
             inputs: this.inputs,
             irq: this.irq,
@@ -420,10 +480,15 @@ class PioEmulator {
                 if (fromLatch) this.execLatch = null;
 
                 if (this.execRequest !== null) {
-                    // Delay cycles on the instruction doing the EXEC are
-                    // ignored; the executee may add its own (§11.4.5).
+                    // The executee runs from the latch once this
+                    // instruction's delay cycles are over. The datasheet
+                    // (§11.4.5) says that delay is ignored, but measured on
+                    // RP2040 and RP2350 it is not: `out exec, 16 [5]` runs
+                    // the executee 5 cycles later. The executee may add
+                    // its own delay as usual.
                     this.execLatch = pioDecodeInstruction(this.execRequest, this.decodeOpts());
-                } else if (instr.delay > 0) {
+                }
+                if (instr.delay > 0) {
                     // Delay only applies after a successful (non-stalled) execution.
                     this.delay = instr.delay;
                 }

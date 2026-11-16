@@ -150,7 +150,6 @@
                 <summary style="cursor: pointer;">Unsupported Features</summary>
                 <ul style="margin: 4px 0 0 1.2em; padding: 0;">
                     <li>Multiple <code>.program</code> blocks / multiple state machines (one state machine per source; it runs as SM0, so IRQ <code>rel</code> adds 0)</li>
-                    <li>Clock divider (<code>.clock_div</code> is accepted; one step is one state machine cycle)</li>
                     <li><code>OUT_STICKY</code> / <code>INLINE_OUT_EN</code>, GPIOs above 31 (<code>GPIOBASE</code>), system-level interrupts and DMA</li>
                     <li>Loading at a non-zero offset (<code>.origin</code> is accepted; the program is loaded at address 0)</li>
                 </ul>
@@ -177,7 +176,7 @@
 ; #pragma pio_sim irq set 0 delay 20               ; raised once, at clock 20</pre>
                 <p style="margin: 0;">
                     <code>irq set|clear &lt;n&gt; [delay &lt;clocks&gt;] [repeat &lt;clocks&gt;] [count &lt;n&gt;]</code>.
-                    The instruction executed on that clock already sees the new value. The program can still set and clear the flag itself.
+                    The instruction executed on that clock already sees the new value; a real partner's <code>irq</code> on cycle N is seen at N+1, so use <code>delay N+1</code>. The program can still set and clear the flag itself.
                 </p>
                 <p style="margin: 8px 0 0 0;"><strong>Settings</strong>: load the controls below on Assemble.</p>
                 <pre style="margin: 4px 0; padding: 6px 8px; background: #f5f5f5; overflow-x: auto;">; #pragma pio_sim config out_base 0 out_count 2 set_base 0 sideset_base 4
@@ -190,7 +189,8 @@
                     <code>autopush</code> / <code>autopull</code> (<code>on</code>, <code>off</code>),
                     <code>push_thresh</code>, <code>pull_thresh</code>,
                     <code>status_sel</code> (<code>tx</code>, <code>rx</code>, <code>irq</code>), <code>status_n</code>,
-                    <code>fifo</code> (<code>txrx</code>, <code>tx</code>, <code>rx</code>, <code>txput</code>, <code>txget</code>, <code>putget</code>).
+                    <code>fifo</code> (<code>txrx</code>, <code>tx</code>, <code>rx</code>, <code>txput</code>, <code>txget</code>, <code>putget</code>),
+                    <code>clkdiv</code> (1-65535, e.g. <code>2.5</code>).
                     Settings the source does not name keep whatever the controls show.
                 </p>
             </details>
@@ -344,6 +344,12 @@
                             <option value="putget">put + get (RP2350)</option>
                         </select>
                     </div>
+                    <div class="config-item">
+                        <label>Clock div:</label>
+                        <input type="number" id="cfg-clkdiv" value="1" min="1" max="65535" step="any" style="width: 70px;"
+                            title="CLKDIV: the state machine runs once every this many system clocks (1-65535, fractions in 1/256). One step is one state machine cycle. The input path runs on the system clock, so input latency in state machine cycles gets shorter as the divider grows.">
+                    </div>
+                    <div id="cfg-clkdiv-note" class="config-note" style="display: none;"></div>
                 </div>
             </div>
 
@@ -352,7 +358,7 @@
                         style="font-size: 0.6em; padding: 2px 5px; border-radius: 3px;">STOPPED</span></h2>
                 <div class="registers">
                     <div class="reg">PC: <span id="reg-pc">0</span></div>
-                    <div class="reg">Clock: <span id="reg-clock">0</span></div>
+                    <div class="reg">Clock: <span id="reg-clock">0</span><span id="reg-sysclk"></span></div>
                     <div class="reg">X: <span id="reg-x">0x00000000</span></div>
                     <div class="reg">Y: <span id="reg-y">0x00000000</span></div>
                     <div class="reg">OSR: <span id="reg-osr">0x00000000</span> (<span id="reg-osr-count">0</span>)</div>
@@ -406,15 +412,16 @@
                         FF2: <span id="gpio-ff2-hex-val">0x00000000</span>
                     </div>
                     <div class="hex-display sync-seen-row"
-                        title="What the state machine reads on the next step: the pads one cycle earlier when the synchronizer is bypassed, three cycles earlier when it is engaged.">
+                        title="What the state machine reads on the next step: the pads one system clock earlier when the synchronizer is bypassed, three system clocks earlier when it is engaged.">
                         PIO sees: <span id="gpio-seen-hex-val">0x00000000</span>
                     </div>
                     <div style="font-size: 0.8em; color: #666; margin-bottom: 5px;">
                         Click: Toggle Input Value.<br>
                         Right-Click/Shift+Click: Toggle Direction (In/Out).<br>
                         Alt+Click: Toggle INPUT_SYNC_BYPASS for this GPIO.<br>
-                        Inputs reach the state machine 1 cycle late when bypassed and 3 cycles late through the
-                        synchronizer, so it sees its own outputs 2 / 4 cycles later.
+                        Inputs reach the state machine 1 system clock late when bypassed and 3 through the
+                        synchronizer, so it sees its own outputs 2 / 4 system clocks later (measured on RP2040 and RP2350).
+                        <span id="latency-note"></span>
                         <br>
                         <span
                             style="border: 1px solid #4caf50; background: #4caf50; width: 10px; height: 10px; display: inline-block;"></span>
