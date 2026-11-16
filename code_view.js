@@ -245,12 +245,31 @@ class CodeView {
             const pcs = g.querySelector('.g-pcs');
             pcs.textContent = '';
         });
+        // Every running state machine's line in its own colour (stripes when
+        // several share a line); the selected one is also marked at the left.
+        const several = this.pcMarks.length > 1;
+        const atLine = new Map();
+        if (!this.stale) {
+            for (const m of this.pcMarks) {
+                if (!atLine.has(m.line)) atLine.set(m.line, []);
+                atLine.get(m.line).push(m.sm);
+            }
+        }
         this.layerRows.forEach((l, i) => {
             const line = i + 1;
+            const sms = atLine.get(line) || [];
             l.classList.toggle('bp', this.breakpointLines.has(line));
-            l.classList.toggle('pc', !this.stale && line === this.pcLine);
+            l.classList.toggle('pc', !several && sms.length > 0);
+            l.classList.toggle('pc-sel', several && !this.stale && line === this.pcLine);
             l.classList.toggle('error', line === this.errorLine);
             l.classList.toggle('warning', !this.stale && this.warningLines.has(line));
+            if (several && sms.length > 0) {
+                const colours = sms.map(sm => CodeView.LINE_COLOURS[sm]);
+                l.style.background = colours.length === 1 ? colours[0]
+                    : `repeating-linear-gradient(135deg, ${colours.map((c, k) => `${c} ${k * 8}px ${(k + 1) * 8}px`).join(', ')})`;
+            } else {
+                l.style.background = '';
+            }
         });
         if (this.stale) return;
         // A mark per state machine when several run, coloured per SM.
@@ -291,3 +310,7 @@ class CodeView {
         this.syncScroll();
     }
 }
+
+// Background of a state machine's current line on the dark editor, one per
+// state machine (the same hues as its marks).
+CodeView.LINE_COLOURS = ['#1d4f7c', '#2b5a2e', '#6a4a14', '#4f2d5f'];

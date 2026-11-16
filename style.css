@@ -168,6 +168,7 @@ header {
 }
 
 .l-row.pc { background-color: #264f78; }
+.l-row.pc-sel { box-shadow: inset 4px 0 0 #fff; }
 .l-row.bp { background-color: rgba(229, 57, 53, 0.18); }
 .l-row.pc.bp { background-color: #5a3a5c; }
 .l-row.error { background-color: rgba(244, 67, 54, 0.45); }

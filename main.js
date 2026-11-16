@@ -13,6 +13,7 @@ const errorMessage = document.getElementById('error-message');
 
 const regPc = document.getElementById('reg-pc');
 const regCycles = document.getElementById('reg-cycles');
+const regSmStatus = document.getElementById('reg-sm-status');
 const warningMessage = document.getElementById('warning-message');
 const regClock = document.getElementById('reg-clock');
 const regX = document.getElementById('reg-x');
@@ -882,18 +883,18 @@ function updateUI(isStep = false) {
     const sm = cur();
     updateSmPanels();
 
-    let displayStatus = emulator.error ? 'ERROR' : (sm.enabled ? sm.status.toUpperCase() : 'OFF');
-    if (!runInterval && sm.status === 'running' && !emulator.error) {
-        displayStatus = isStep ? 'STEP' : 'STOPPED';
-    }
-
+    // The heading shows the simulator's run state, the same whichever state
+    // machine is selected. Each state machine's own state (running,
+    // stalled) is in its PC box and in the summary.
+    let displayStatus = emulator.error ? 'ERROR' : (runInterval ? 'RUNNING' : (isStep ? 'STEP' : 'STOPPED'));
     statusIndicator.textContent = displayStatus;
+
+    const smState = emulator.error && sm.status === 'error' ? 'error' : (sm.enabled ? sm.status : 'off');
+    regSmStatus.className = `sm-status ${smState}`;
+    setText(regSmStatus, smState.toUpperCase());
 
     if (displayStatus === 'RUNNING') {
         statusIndicator.style.backgroundColor = '#4caf50';
-        statusIndicator.style.color = 'white';
-    } else if (displayStatus === 'STALLED') {
-        statusIndicator.style.backgroundColor = '#ff9800';
         statusIndicator.style.color = 'white';
     } else if (displayStatus === 'ERROR') {
         statusIndicator.style.backgroundColor = '#f44336';
