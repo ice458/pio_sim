@@ -856,50 +856,68 @@ function instrText(addr) {
     return code.split(';')[0].trim();
 }
 
+// The summary rows and the tab buttons are made once and only updated
+// afterwards. Rebuilding them on every screen update (each step while
+// running) would replace a button between press and release, and the click
+// would be lost.
+const smRows = emulator.sms.map((sm, i) => {
+    const tr = document.createElement('tr');
+    const cells = [];
+    for (let k = 0; k < 8; k++) {
+        const td = document.createElement('td');
+        tr.appendChild(td);
+        cells.push(td);
+    }
+    cells[0].textContent = `SM${i}`;
+    cells[4].className = 'instr';
+    const status = document.createElement('span');
+    cells[2].appendChild(status);
+    tr.addEventListener('click', () => selectSm(i));
+    smSummaryBody.appendChild(tr);
+    return { tr, cells, status };
+});
+const smTabs = smTabContainers.map(box => emulator.sms.map((sm, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'sm-tab';
+    b.textContent = `SM${i}`;
+    b.addEventListener('click', () => selectSm(i));
+    box.appendChild(b);
+    return b;
+}));
+
+// Set text only when it changed, so an update does not disturb the page.
+function setText(el, text) {
+    text = String(text);
+    if (el.textContent !== text) el.textContent = text;
+}
+
 function updateSmPanels() {
     const multi = multiSm();
     document.querySelectorAll('.multi-sm-only').forEach(el => { el.style.display = multi ? '' : 'none'; });
-    document.querySelectorAll('.sm-suffix').forEach(el => { el.textContent = multi ? ` (SM${sel})` : ''; });
+    document.querySelectorAll('.sm-suffix').forEach(el => setText(el, multi ? ` (SM${sel})` : ''));
     if (!multi) return;
 
-    smSummaryBody.innerHTML = '';
     emulator.sms.forEach((sm, i) => {
-        const tr = document.createElement('tr');
-        if (i === sel) tr.classList.add('selected');
-        if (!sm.enabled) tr.classList.add('off');
+        const row = smRows[i];
+        row.tr.classList.toggle('selected', i === sel);
+        row.tr.classList.toggle('off', !sm.enabled);
         const status = sm.enabled ? sm.status : 'off';
-        const cells = sm.enabled
+        const values = sm.enabled
             ? [`SM${i}`, sm.program ? sm.program.name : '', null, sm.pc, instrText(sm.pc), hex8(sm.x), hex8(sm.y), sm.cycles]
             : [`SM${i}`, '', null, '', '', '', '', ''];
-        cells.forEach((c, k) => {
-            const td = document.createElement('td');
-            if (k === 2) {
-                const span = document.createElement('span');
-                span.className = `sm-status ${status}`;
-                span.textContent = status.toUpperCase();
-                td.appendChild(span);
-            } else {
-                td.textContent = c;
-            }
-            if (k === 4) { td.className = 'instr'; td.title = c; }
-            tr.appendChild(td);
-        });
-        tr.addEventListener('click', () => selectSm(i));
-        smSummaryBody.appendChild(tr);
-    });
+        values.forEach((v, k) => { if (k !== 2) setText(row.cells[k], v); });
+        row.cells[4].title = values[4];
+        row.status.className = `sm-status ${status}`;
+        setText(row.status, status.toUpperCase());
 
-    for (const box of smTabContainers) {
-        box.innerHTML = '';
-        emulator.sms.forEach((sm, i) => {
-            const b = document.createElement('button');
-            b.type = 'button';
-            b.className = 'sm-tab' + (i === sel ? ' selected' : '') + (sm.enabled ? '' : ' off');
-            b.textContent = `SM${i}`;
+        for (const tabs of smTabs) {
+            const b = tabs[i];
+            b.classList.toggle('selected', i === sel);
+            b.classList.toggle('off', !sm.enabled);
             b.title = sm.enabled ? `SM${i}: ${sm.program ? sm.program.name : ''}` : `SM${i}: not running`;
-            b.addEventListener('click', () => selectSm(i));
-            box.appendChild(b);
-        });
-    }
+        }
+    });
 }
 
 function updateUI(isStep = false) {
