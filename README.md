@@ -12,7 +12,7 @@ A browser-based PIO (Programmable I/O) assembly simulator for the Raspberry Pi P
   - Step-by-step execution debugging
   - Scratch registers (X, Y) and Shift registers (ISR, OSR) states
   - TX / RX FIFO buffers
-  - GPIO pin states and timing charts
+  - GPIO pin states and timing charts (pins, IRQ flags and registers; hover for the values at any clock)
 - **Interrupts (IRQ) Monitoring:** Clickable IRQ flags to test wait and set behaviors interactively.
 - **Several state machines:** Up to four state machines on shared instruction memory, GPIOs and IRQ flags, with a summary of all of them and tabs for each one's details and settings.
 - **Simulator pragmas:** Pin waveforms, IRQ events, settings and state machine assignment declared in the source (see below).

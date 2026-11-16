@@ -123,6 +123,12 @@ const timingPinSelector = document.getElementById('timing-pin-selector');
 const timingRegSelector = document.getElementById('timing-reg-selector');
 const selectedTimingPins = new Set();
 const selectedTimingRegs = new Set();
+const timingIrqSelector = document.getElementById('timing-irq-selector');
+// IRQ rows: the flags the program uses are shown by default; a click on a
+// flag's button overrides that, to show or hide it.
+const timingIrqOverride = new Map();    // flag -> shown
+const timingIrqButtons = [];
+let timingCursorX = null;   // mouse x on the timing chart, in canvas pixels
 
 const TIMING_REGS = [
     { key: 'pc',  label: 'PC',  format: v => v.toString() },
@@ -233,6 +239,21 @@ for (const reg of TIMING_REGS) {
         drawTimingChart();
     });
     timingRegSelector.appendChild(btn);
+}
+
+// IRQ flags. A button is lit while its flag is shown, whether by default or
+// by a click; drawTimingChart keeps them in step.
+for (let i = 0; i < 8; i++) {
+    const btn = document.createElement('div');
+    btn.className = 'reg-toggle';
+    btn.textContent = `IRQ ${i}`;
+    btn.title = `Toggle IRQ ${i} in Timing Chart`;
+    btn.addEventListener('click', () => {
+        timingIrqOverride.set(i, !btn.classList.contains('selected'));
+        drawTimingChart();
+    });
+    timingIrqSelector.appendChild(btn);
+    timingIrqButtons.push(btn);
 }
 
 btnAssemble.addEventListener('click', assembleAndReset);
@@ -456,6 +477,8 @@ exampleSelect.addEventListener('change', () => {
         // example's settings go to SM0, so nothing is left over from the
         // previous source for applyProgramConfig to undo.
         settingsFromDirectives = [new Set(), new Set(), new Set(), new Set()];
+        // A new example's flags show by default again.
+        timingIrqOverride.clear();
         for (const sm of emulator.sms) {
             Object.assign(sm, PIO_SM_CONFIG_DEFAULTS);
             sm.setFifoMode('txrx');
@@ -1101,6 +1124,12 @@ function drawTimingChart() {
             }
         }
     }
+    // A click on a flag's button wins over the default.
+    for (const [i, shown] of timingIrqOverride) {
+        if (shown) irqMask |= 1 << i;
+        else irqMask &= ~(1 << i);
+    }
+    timingIrqButtons.forEach((btn, i) => btn.classList.toggle('selected', ((irqMask >> i) & 1) === 1));
     const irqsToShow = [];
     for (let i = 0; i < 8; i++) {
         if ((irqMask >> i) & 1) {
@@ -1370,8 +1399,65 @@ function drawTimingChart() {
     ctx.lineTo(0, height);
     ctx.stroke();
 
+    // Cursor under the mouse: a line through one clock, with every row's
+    // value at that clock.
+    const col = timingCursorX === null ? -1 : Math.floor((timingCursorX - LABEL_W) / stepX);
+    if (col >= 0 && col < visibleHistory.length) {
+        const h = visibleHistory[col];
+        const x = (col + 0.5) * stepX;
+        ctx.fillStyle = 'rgba(255, 193, 7, 0.18)';
+        ctx.fillRect(col * stepX, 0, stepX, height);
+        ctx.strokeStyle = '#e65100';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+
+        // Values on one side of the line, the clock on the other; flipped
+        // near the right edge.
+        const flip = x > plotW - 90;
+        const box = (text, y, left) => {
+            ctx.font = '11px Consolas';
+            const w = ctx.measureText(text).width + 6;
+            const bx = left ? x - 4 - w : x + 4;
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+            ctx.fillRect(bx, y - 7, w, 14);
+            ctx.strokeStyle = '#e65100';
+            ctx.strokeRect(bx + 0.5, y - 6.5, w - 1, 13);
+            ctx.fillStyle = '#000';
+            ctx.fillText(text, bx + 3, y + 4);
+        };
+        for (let i = 0; i < numPins; i++) {
+            const row = bitRows[i];
+            const v = row.key === 'pins'
+                ? ((h.pad === undefined ? h.pins : h.pad) >> row.bit) & 1
+                : (h[row.key] >> row.bit) & 1;
+            box(String(v), i * pinRowHeight + pinRowHeight / 2, flip);
+        }
+        for (let i = 0; i < numRegs; i++) {
+            const reg = regsToShow[i];
+            const v = reg.get(h);
+            box(v === undefined ? '-' : reg.format(v), pinAreaHeight + (i + 0.5) * regRowHeight, flip);
+        }
+        const clockText = h.sysclk !== undefined && h.sysclk !== h.clock
+            ? `clock ${h.clock} (sysclk ${h.sysclk})` : `clock ${h.clock}`;
+        box(clockText, 8, !flip);
+    }
+
     ctx.restore();
 }
+
+// The timing chart's cursor follows the mouse.
+canvas.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect();
+    timingCursorX = (e.clientX - rect.left) * canvas.width / rect.width;
+    drawTimingChart();
+});
+canvas.addEventListener('mouseleave', () => {
+    timingCursorX = null;
+    drawTimingChart();
+});
 
 // Restore code from localStorage (if any) before initial assemble.
 try {
