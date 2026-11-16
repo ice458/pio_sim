@@ -78,23 +78,24 @@ Syntax: `irq set|clear <n> [delay <clocks>] [repeat <clocks>] [count <n>]`
 - The instruction executed on that clock already sees the new flag value. A real partner state machine is seen one cycle after it executes `irq`, so a partner instruction on cycle N corresponds to `delay N+1`.
 - The program can still set and clear the flag itself, and so can you by clicking it. Scheduled flags are added to the timing chart.
 
-### FIFO data
+### FIFO data (DMA)
 
-Keep the TX FIFO supplied and the RX FIFO read, as a DMA channel would on the chip. Programs such as a UART or I2S output then run without pushing every word by hand.
+Do the system's side of the FIFOs as a DMA channel would on the chip: write words to the TX FIFO, and read the RX FIFO. Programs such as a UART or I2S output then run without putting every word in by hand.
 
 ```
-; #pragma pio_sim tx 7 1 1 3 3                     ; these words, then nothing
-; #pragma pio_sim tx 0xF0F000FF 0x80017FFE loop    ; these words over and over
-; #pragma pio_sim tx "Hi!\n"                       ; one word per character
-; #pragma pio_sim rx drain                         ; read every word pushed
+; #pragma pio_sim dma put 7 1 1 3 3                ; these words, then nothing
+; #pragma pio_sim dma put 0xF0F000FF 0x80017FFE loop ; these words over and over
+; #pragma pio_sim dma put "Hi!\n"                  ; one word per character
+; #pragma pio_sim dma get                          ; read every word pushed
 ```
 
-Syntax: `tx [sm <n>] <word|"text"> ... [loop]` and `rx [sm <n>] drain`
+Syntax: `dma [sm <n>] put <word|"text"> ... [loop]` and `dma [sm <n>] get`
 
-- The TX FIFO is topped up before every step, so the state machine finds a word whenever it pulls. A real DMA channel takes a few clocks to respond, which the simulator leaves out.
-- Several `tx` lines add up to one list. `loop` starts it over at the end; without it, the FIFO runs dry after the last word.
+- These act at the system end of the FIFOs, like the Put and Get buttons (`pio_sm_put()` / `pio_sm_get()` in C). Autopull and autopush are the other end: the state machine moving words between the FIFOs and its OSR / ISR. The FIFO panel shows both ends.
+- `dma put` tops up the TX FIFO before every step, so the state machine finds a word whenever it pulls. A real DMA channel takes a few clocks to respond, which the simulator leaves out.
+- Several `dma put` lines add up to one list. `loop` starts it over at the end; without it, the FIFO runs dry after the last word.
 - In a text, `\n`, `\r`, `\t`, `\0`, `\\`, `\"` and `\xNN` are escapes. A `;` or `//` ends the pragma, so write `;` as `\x3B` and `/` as `\x2F`.
-- `rx drain` empties the RX FIFO after every step, so the program never stalls on a full one. The words read are listed under the RX FIFO, with their characters.
+- `dma get` empties the RX FIFO after every step, so the program never stalls on a full one. The words read are listed at the bottom of the RX FIFO, with their characters, in place of the Get button.
 - Scope is as for `config`: inside a program, the state machines running it; before the first `.program`, every state machine; `sm <n>` names one.
 
 ### Settings
@@ -148,7 +149,7 @@ All state machines run on one time line. A step advances to the next system cloc
 ## Limitations
 
 - One PIO block. `irq prev` / `irq next` address flags of neighbouring blocks, which exist but nothing else drives; IRQ event pragmas can stand in for them.
-- `OUT_STICKY` / `INLINE_OUT_EN`, GPIOs above 31 (`GPIOBASE`) and system-level interrupts are not modelled. DMA is not either, beyond what the `tx` / `rx drain` pragmas stand in for.
+- `OUT_STICKY` / `INLINE_OUT_EN`, GPIOs above 31 (`GPIOBASE`) and system-level interrupts are not modelled. DMA is not either, beyond what the `dma` pragma stands in for.
 - Instructions are accepted without a `.program` line, which `pioasm` would reject.
 
 ## License

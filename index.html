@@ -156,7 +156,7 @@
             </details>
 
             <details style="font-size: 0.85em; color: #777; margin-top: 4px; line-height: 1.7;">
-                <summary style="cursor: pointer;">Simulator pragmas (<code>#pragma pio_sim</code>): pin waveforms, IRQ events, FIFO data, settings, state machines</summary>
+                <summary style="cursor: pointer;">Simulator pragmas (<code>#pragma pio_sim</code>): pin waveforms, IRQ events, FIFO data (DMA), settings, state machines</summary>
                 <p style="margin: 8px 0 0 0;">
                     Comment lines starting with <code>; #pragma pio_sim</code> set up the simulation from the source.
                     <code>pioasm</code> ignores them, so they can stay in your real code and are saved with it.
@@ -178,15 +178,16 @@
                     <code>irq set|clear &lt;n&gt; [delay &lt;clocks&gt;] [repeat &lt;clocks&gt;] [count &lt;n&gt;]</code>.
                     The instruction executed on that clock already sees the new value; a real partner's <code>irq</code> on cycle N is seen at N+1, so use <code>delay N+1</code>. The program can still set and clear the flag itself.
                 </p>
-                <p style="margin: 8px 0 0 0;"><strong>FIFO data</strong>: keep the TX FIFO supplied and the RX FIFO read, as DMA would.</p>
-                <pre style="margin: 4px 0; padding: 6px 8px; background: #f5f5f5; overflow-x: auto;">; #pragma pio_sim tx 7 1 1 3 3                     ; these words, then nothing
-; #pragma pio_sim tx 0xF0F000FF 0x80017FFE loop    ; these words over and over
-; #pragma pio_sim tx "Hi!\n"                       ; one word per character
-; #pragma pio_sim rx drain                         ; read every word pushed</pre>
+                <p style="margin: 8px 0 0 0;"><strong>FIFO data (DMA)</strong>: the system's side of the FIFOs, as a DMA channel would do it (the Put / Get buttons by hand).</p>
+                <pre style="margin: 4px 0; padding: 6px 8px; background: #f5f5f5; overflow-x: auto;">; #pragma pio_sim dma put 7 1 1 3 3                ; these words, then nothing
+; #pragma pio_sim dma put 0xF0F000FF 0x80017FFE loop ; these words over and over
+; #pragma pio_sim dma put "Hi!\n"                  ; one word per character
+; #pragma pio_sim dma get                          ; read every word pushed</pre>
                 <p style="margin: 0;">
-                    <code>tx [sm &lt;n&gt;] &lt;word|"text"&gt; ... [loop]</code>: the TX FIFO is topped up before every step; several lines add up, <code>loop</code> starts over at the end.
+                    <code>dma [sm &lt;n&gt;] put &lt;word|"text"&gt; ... [loop]</code>: the TX FIFO is topped up before every step; several lines add up, <code>loop</code> starts over at the end.
                     Text escapes: <code>\n \r \t \0 \\ \" \xNN</code> (<code>;</code> or <code>//</code> ends the pragma: write <code>\x3B</code>, <code>\x2F</code>).
-                    <code>rx [sm &lt;n&gt;] drain</code>: the RX FIFO is emptied after every step; the words read are listed under it.
+                    <code>dma [sm &lt;n&gt;] get</code>: the RX FIFO is emptied after every step; the words read are listed in place of the Get button.
+                    Autopull / autopush are the state machine's end of the FIFOs, not this.
                     Scope as for <code>config</code>.
                 </p>
                 <p style="margin: 8px 0 0 0;"><strong>Settings</strong>: load the controls below on Assemble.</p>
@@ -423,26 +424,39 @@
 
                 <h3>FIFOs<span class="sm-suffix"></span></h3>
                 <div class="fifos">
+                    <!-- Each FIFO top to bottom in the direction data flows: TX from
+                         the system to the state machine, RX the other way. -->
                     <div class="fifo-box">
-                        <h4>TX FIFO</h4>
-                        <div class="fifo-controls"
-                            style="margin-bottom: 6px; display: flex; gap: 8px; align-items: center;">
-                            <input type="text" id="tx-input" placeholder="e.g. 0xFF, 255, 0b1010, FF">
-                            <button id="btn-push-tx">Push</button>
-                            <span id="tx-push-result" style="font-size: 0.9em; color: #555;"></span>
+                        <h4>TX FIFO <span class="fifo-dir">system &rarr; state machine</span></h4>
+                        <div class="fifo-end system">
+                            <span class="side-tag">System</span>
+                            <input type="text" id="tx-input" placeholder="e.g. 0xFF, 255, 0b1010, FF"
+                                title="A word for the TX FIFO, as pio_sm_put() writes it">
+                            <button id="btn-put-tx" title="Write the word to the TX FIFO, as pio_sm_put() does">Put</button>
+                            <span id="tx-put-result"></span>
                         </div>
+                        <div id="tx-dma-note" class="dma-note" style="display: none;"></div>
                         <ul id="tx-fifo-list"></ul>
-                        <div id="tx-feed-note" class="feed-note" style="display: none;"></div>
+                        <div class="fifo-end sm">
+                            <span class="side-tag">SM</span>
+                            <span id="tx-sm-side"></span>
+                        </div>
                     </div>
                     <div class="fifo-box">
-                        <h4 id="rx-fifo-title">RX FIFO</h4>
-                        <div class="rx-controls" id="rx-pop-controls"
-                            style="margin-bottom: 6px; display: flex; gap: 8px; align-items: center;">
-                            <button id="btn-pop-rx">Pop</button>
-                            <span id="rx-pop-result" style="font-size: 0.9em; color: #555;"></span>
+                        <h4><span id="rx-fifo-title">RX FIFO</span> <span class="fifo-dir">state machine &rarr; system</span></h4>
+                        <div class="fifo-end sm" id="rx-sm-end">
+                            <span class="side-tag">SM</span>
+                            <span id="rx-sm-side"></span>
                         </div>
-                        <div class="rx-controls" id="rx-reg-controls"
-                            style="margin-bottom: 6px; display: none; gap: 6px; align-items: center;">
+                        <div id="rx-reg-note" style="font-size: 0.8em; color: #666; margin-bottom: 6px; display: none;"></div>
+                        <ul id="rx-fifo-list"></ul>
+                        <div class="fifo-end system" id="rx-get-controls">
+                            <span class="side-tag">System</span>
+                            <button id="btn-get-rx" title="Read a word from the RX FIFO, as pio_sm_get() does">Get</button>
+                            <span id="rx-get-result"></span>
+                        </div>
+                        <div class="fifo-end system" id="rx-reg-controls" style="display: none;">
+                            <span class="side-tag">System</span>
                             <select id="rx-reg-index" title="RXFx_PUTGETn register to write">
                                 <option value="0">[0]</option>
                                 <option value="1">[1]</option>
@@ -452,9 +466,7 @@
                             <input type="text" id="rx-reg-input" placeholder="e.g. 0xFF" style="width: 90px;">
                             <button id="btn-write-rx-reg">Write</button>
                         </div>
-                        <div id="rx-reg-note" style="font-size: 0.8em; color: #666; margin-bottom: 6px; display: none;"></div>
-                        <ul id="rx-fifo-list"></ul>
-                        <div id="rx-drain-note" class="feed-note" style="display: none;"></div>
+                        <div id="rx-dma-note" class="dma-note" style="display: none;"></div>
                     </div>
                 </div>
                 </div>

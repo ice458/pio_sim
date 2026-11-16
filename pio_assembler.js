@@ -893,10 +893,10 @@ class PioAssembler {
         const irqEvents = [];
         const smAssign = [];
         const smConfig = [];          // per state machine, from `config sm <n>`
-        const feeds = [];             // `tx` / `rx` pragmas
+        const dma = [];               // `dma` pragmas
         const globalConfig = {};
         const runPragmas = (list, config, program = null) => {
-            const out = { stimuli, irqEvents, config, configSeen: new Set(), smAssign, smConfig, feeds, program };
+            const out = { stimuli, irqEvents, config, configSeen: new Set(), smAssign, smConfig, dma, program };
             for (const p of list) atLine(p.line, () => { this.line = p.line; this.handlePragma(p.body, out); });
         };
         this.symbols = this.globalSymbols;
@@ -975,21 +975,21 @@ class PioAssembler {
         const smConfigs = smPrograms.map((idx, sm) => idx === null ? null
             : Object.assign({}, programs[idx].config, globalConfig, programConfigs[idx], smConfig[sm] ? smConfig[sm].config : {}));
 
-        // FIFO feeds per state machine: to the one named, to the state
-        // machines running the program the pragma is in, or before the
-        // first .program, to every state machine that runs a program.
-        const smFeeds = smPrograms.map(() => ({ tx: [], txLoop: false, rxDrain: false }));
-        for (const f of feeds) {
-            atLine(f.line, () => {
-                const targets = f.sm !== null ? [f.sm]
-                    : [0, 1, 2, 3].filter(sm => f.program === null ? smPrograms[sm] !== null : smPrograms[sm] === f.program);
+        // DMA per state machine: to the one named, to the state machines
+        // running the program the pragma is in, or before the first
+        // .program, to every state machine that runs a program.
+        const smDma = smPrograms.map(() => ({ put: [], loop: false, get: false }));
+        for (const d of dma) {
+            atLine(d.line, () => {
+                const targets = d.sm !== null ? [d.sm]
+                    : [0, 1, 2, 3].filter(sm => d.program === null ? smPrograms[sm] !== null : smPrograms[sm] === d.program);
                 for (const sm of targets) {
-                    if (smPrograms[sm] === null) throw new Error(`#pragma pio_sim: ${f.kind} for state machine ${sm}, which runs no program`);
-                    if (f.kind === 'tx') {
-                        smFeeds[sm].tx.push(...f.words);
-                        if (f.loop) smFeeds[sm].txLoop = true;
+                    if (smPrograms[sm] === null) throw new Error(`#pragma pio_sim: dma ${d.kind} for state machine ${sm}, which runs no program`);
+                    if (d.kind === 'put') {
+                        smDma[sm].put.push(...d.words);
+                        if (d.loop) smDma[sm].loop = true;
                     } else {
-                        smFeeds[sm].rxDrain = true;
+                        smDma[sm].get = true;
                     }
                 }
             });
@@ -1031,7 +1031,7 @@ class PioAssembler {
             memory,
             smPrograms,
             smConfigs,
-            smFeeds
+            smDma
         };
     }
 
@@ -1253,8 +1253,8 @@ class PioAssembler {
     //   irq set|clear <n> [delay <clocks>] [repeat <clocks>] [count <n>]
     //   config [sm <n>] <name> <value> [<name> <value> ...]
     //   sm <n> program <name> | sm <n> off
-    //   tx [sm <n>] <word|"text"> ... [loop]
-    //   rx [sm <n>] drain
+    //   dma [sm <n>] put <word|"text"> ... [loop]
+    //   dma [sm <n>] get
     //   chip rp2040|rp2350
     //
     // Numbers may be decimal, 0x hex, 0b binary, or a .define name.
@@ -1266,8 +1266,7 @@ class PioAssembler {
             case 'irq': this.pragmaIrq(tokens, out.irqEvents); break;
             case 'config': this.pragmaConfig(tokens, out.config, out.configSeen, out); break;
             case 'sm': this.pragmaSm(tokens, out.smAssign); break;
-            case 'tx':
-            case 'rx': this.pragmaFeed(body, out); break;
+            case 'dma': this.pragmaDma(body, out); break;
             case 'chip': {
                 // chip rp2040|rp2350: whose timing to follow.
                 const chip = (tokens[1] || '').toLowerCase();
@@ -1279,7 +1278,7 @@ class PioAssembler {
                 break;
             }
             default:
-                throw new Error(`#pragma pio_sim: unknown pragma '${tokens[0] || ''}' (expected pin, irq, config, sm, tx, rx or chip)`);
+                throw new Error(`#pragma pio_sim: unknown pragma '${tokens[0] || ''}' (expected pin, irq, config, sm, dma or chip)`);
         }
     }
 
@@ -1301,24 +1300,21 @@ class PioAssembler {
         smAssign.push({ sm, program, line: this.line });
     }
 
-    // tx / rx: what a DMA channel would do for the state machine.
-    //   tx [sm <n>] <word|"text"> ... [loop]
-    //     Words for the TX FIFO, put in whenever it has room. A "text" gives
+    // dma: the system side of the FIFOs, done as a DMA channel would.
+    //   dma [sm <n>] put <word|"text"> ... [loop]
+    //     Words written to the TX FIFO whenever it has room. A "text" gives
     //     one word per character (\n, \r, \t, \0, \\, \" and \xNN escapes).
-    //     Several tx lines add up; `loop` starts the list over at its end.
-    //   rx [sm <n>] drain
+    //     Several put lines add up; `loop` starts the list over at its end.
+    //   dma [sm <n>] get
     //     Read the RX FIFO whenever it holds a word, so the state machine
     //     never stalls on a full one; the words read are listed.
     // Without `sm <n>`, they are for the state machines running the program
     // the pragma is in; before the first .program, for every state machine
     // that runs one (as a `config` there is).
-    pragmaFeed(body, out) {
+    pragmaDma(body, out) {
+        const usage = `expected '; #pragma pio_sim dma [sm <n>] put <word|"text"> ... [loop]' or '; #pragma pio_sim dma [sm <n>] get'`;
         // Tokens, with a quoted string as one.
         const tokens = body.trim().match(/"(?:[^"\\]|\\.)*"|"[^]*|\S+/g) || [];
-        const kind = tokens[0].toLowerCase();
-        const usage = kind === 'tx'
-            ? `expected '; #pragma pio_sim tx [sm <n>] <word|"text"> ... [loop]'`
-            : `expected '; #pragma pio_sim rx [sm <n>] drain'`;
         let i = 1;
         let sm = null;
         if ((tokens[1] || '').toLowerCase() === 'sm') {
@@ -1328,30 +1324,33 @@ class PioAssembler {
             sm = parseInt(tokens[2]);
             i = 3;
         }
-        const feed = { kind, sm, program: out.program, words: [], loop: false, line: this.line };
-        if (kind === 'rx') {
-            if ((tokens[i] || '').toLowerCase() !== 'drain' || tokens.length !== i + 1) {
-                throw new Error(`#pragma pio_sim: ${usage}`);
-            }
-            out.feeds.push(feed);
+        const kind = (tokens[i] || '').toLowerCase();
+        if (kind !== 'put' && kind !== 'get') {
+            throw new Error(`#pragma pio_sim: expected 'put' or 'get' after 'dma', got '${tokens[i] || ''}' (${usage})`);
+        }
+        i++;
+        const dma = { kind, sm, program: out.program, words: [], loop: false, line: this.line };
+        if (kind === 'get') {
+            if (tokens.length !== i) throw new Error(`#pragma pio_sim: unexpected '${tokens[i]}' after 'dma get' (${usage})`);
+            out.dma.push(dma);
             return;
         }
         for (; i < tokens.length; i++) {
             const tok = tokens[i];
             if (tok.toLowerCase() === 'loop') {
                 if (i !== tokens.length - 1) throw new Error(`#pragma pio_sim: 'loop' must come last (${usage})`);
-                feed.loop = true;
+                dma.loop = true;
             } else if (tok.startsWith('"')) {
                 if (!/^"(?:[^"\\]|\\.)*"$/.test(tok)) throw new Error(`#pragma pio_sim: unterminated string ${tok}`);
-                feed.words.push(...PioAssembler.unescapeText(tok.slice(1, -1)));
+                dma.words.push(...PioAssembler.unescapeText(tok.slice(1, -1)));
             } else {
-                const v = this.pragmaNumber(tok, 'tx word', usage);
-                if (v > 0xFFFFFFFF) throw new Error(`#pragma pio_sim: tx word ${tok} does not fit in 32 bits`);
-                feed.words.push(v >>> 0);
+                const v = this.pragmaNumber(tok, 'dma put word', usage);
+                if (v > 0xFFFFFFFF) throw new Error(`#pragma pio_sim: dma put word ${tok} does not fit in 32 bits`);
+                dma.words.push(v >>> 0);
             }
         }
-        if (feed.words.length === 0) throw new Error(`#pragma pio_sim: tx has no words (${usage})`);
-        out.feeds.push(feed);
+        if (dma.words.length === 0) throw new Error(`#pragma pio_sim: dma put has no words (${usage})`);
+        out.dma.push(dma);
     }
 
     // Character codes of a quoted string's contents, escapes resolved.

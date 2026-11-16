@@ -25,16 +25,19 @@ const regIsrCount = document.getElementById('reg-isr-count');
 const statusIndicator = document.getElementById('status-indicator');
 
 const txInput = document.getElementById('tx-input');
-const btnPushTx = document.getElementById('btn-push-tx');
-const txPushResult = document.getElementById('tx-push-result');
+const btnPutTx = document.getElementById('btn-put-tx');
+const txPutResult = document.getElementById('tx-put-result');
 const txFifoList = document.getElementById('tx-fifo-list');
 const rxFifoList = document.getElementById('rx-fifo-list');
-const btnPopRx = document.getElementById('btn-pop-rx');
-const rxPopResult = document.getElementById('rx-pop-result');
+const btnGetRx = document.getElementById('btn-get-rx');
+const rxGetResult = document.getElementById('rx-get-result');
 
 const rxFifoTitle = document.getElementById('rx-fifo-title');
-const txFeedNote = document.getElementById('tx-feed-note');
-const rxDrainNote = document.getElementById('rx-drain-note');
+const txDmaNote = document.getElementById('tx-dma-note');
+const rxDmaNote = document.getElementById('rx-dma-note');
+const txSmSide = document.getElementById('tx-sm-side');
+const rxSmSide = document.getElementById('rx-sm-side');
+const rxSmEnd = document.getElementById('rx-sm-end');
 
 // A FIFO as one slot per entry, oldest first: the words in it, then empty
 // slots up to its depth. The slots are kept and only their text changes.
@@ -50,14 +53,14 @@ function setFifoSlots(list, words, capacity) {
 }
 
 // A word read from a FIFO, with its character when it is one.
-function feedWordText(v) {
+function fifoWordText(v) {
     const hex = '0x' + (v >>> 0).toString(16).toUpperCase();
     const named = { 9: '\\t', 10: '\\n', 13: '\\r' };
     if (named[v]) return `${hex} '${named[v]}'`;
     if (v >= 0x20 && v < 0x7f) return `${hex} '${String.fromCharCode(v)}'`;
     return hex;
 }
-const rxPopControls = document.getElementById('rx-pop-controls');
+const rxGetControls = document.getElementById('rx-get-controls');
 const rxRegControls = document.getElementById('rx-reg-controls');
 const rxRegIndex = document.getElementById('rx-reg-index');
 const rxRegInput = document.getElementById('rx-reg-input');
@@ -182,7 +185,7 @@ const codeView = new CodeView(codeEditor, {
 // Source text of each instruction address, for the state machine summary.
 let addrText = new Map();
 let lastRxMessage = 'Not read yet';
-let lastTxMessage = 'Not pushed yet';
+let lastTxMessage = 'Nothing put yet';
 
 for (let i = 31; i >= 0; i--) {
     const bit = document.createElement('div');
@@ -338,9 +341,9 @@ const examples = {
 ; stays until a new one arrives.
 ;
 ; #pragma pio_sim config sideset_base 0 set_base 0 set_count 1
-; The TX FIFO, as a C program or DMA would fill it: the period (7),
-; then levels 1, 3 and 6 for two PWM periods each.
-; #pragma pio_sim tx 7  1 1  3 3  6 6
+; DMA writes the TX FIFO, as a C program would set it up: the period
+; (7), then levels 1, 3 and 6 for two PWM periods each.
+; #pragma pio_sim dma put 7  1 1  3 3  6 6
 
 .program pwm
 .side_set 1 opt
@@ -397,8 +400,8 @@ counted:
 ; GPIO 2: pulses of 4, 10 and 20 clocks, 8 clocks apart.
 ; #pragma pio_sim pin 2 low delay 6 hi 4 low 8 hi 10 low 8 hi 20 low 8 count 1
 ; #pragma pio_sim config set_base 0 set_count 1 in_base 2 jmp_pin 2
-; Read the RX FIFO as DMA would; the results show under RX FIFO.
-; #pragma pio_sim rx drain
+; DMA reads the results from the RX FIFO; they show under it.
+; #pragma pio_sim dma get
 
 .program pulse_width
     set pindirs, 1      ; GPIO 0 as an output
@@ -426,8 +429,8 @@ still:
 
 .program uart_tx
 ; #pragma pio_sim config set_base 0 set_count 1 out_base 0 out_count 1
-; Bytes to send, as a C program or DMA would write them:
-; #pragma pio_sim tx "Hi!\\n"
+; Bytes to send, written to the TX FIFO by DMA:
+; #pragma pio_sim dma put "Hi!\\n"
     set pindirs, 1          ; GPIO 0 as an output
     set pins, 1             ; the line idles high
 .wrap_target
@@ -442,7 +445,8 @@ bit:
 
 .program uart_rx
 ; #pragma pio_sim config in_base 0 jmp_pin 0
-; #pragma pio_sim rx drain
+; DMA reads the received bytes; they show under the RX FIFO.
+; #pragma pio_sim dma get
     wait 1 pin 0            ; let the line go idle (high) first
 .wrap_target
 start:
@@ -458,7 +462,7 @@ bit:
     jmp start
 ok:
     in null, 24             ; move the byte from bits 31-24 to 7-0
-    push                    ; the received byte (shown under RX FIFO)
+    push                    ; the received byte
 .wrap`
     },
     spi: {
@@ -478,9 +482,9 @@ ok:
 ;
 ; Shifting left sends bits 31, 30, ... first, so a byte goes in the top 8
 ; bits. (A C program writes the byte with an 8-bit store, which puts it
-; in every byte of the word.)
-; #pragma pio_sim tx 0xA5000000 0x3C000000
-; #pragma pio_sim rx drain
+; in every byte of the word.) DMA writes two bytes and reads the replies.
+; #pragma pio_sim dma put 0xA5000000 0x3C000000
+; #pragma pio_sim dma get
 ;
 ; MISO: a device answering 0xC3 (1100 0011), 4 clocks a bit.
 ; #pragma pio_sim pin 2 hi 8 low 16 hi 8
@@ -507,8 +511,9 @@ ok:
 ; #pragma pio_sim config out_base 0 out_count 1 set_base 0 set_count 3 sideset_base 1
 ; #pragma pio_sim config out_shift left autopull on pull_thresh 32
 ;
-; Frames: (left 0xF0F0, right 0x00FF), then (0x8001, 0x7FFE), repeated.
-; #pragma pio_sim tx 0xF0F000FF 0x80017FFE loop
+; DMA writes frames (left 0xF0F0, right 0x00FF), then (0x8001, 0x7FFE),
+; over and over.
+; #pragma pio_sim dma put 0xF0F000FF 0x80017FFE loop
 
 .program i2s_out
 .side_set 2                         ; bit 1 = LRCLK, bit 0 = BCLK
@@ -541,8 +546,8 @@ right_bits:
 ; OUT stalls with the line low, which latches the colours.
 ; #pragma pio_sim config sideset_base 0 set_base 0 set_count 1 clkdiv 18.75
 ; #pragma pio_sim config out_shift left autopull on pull_thresh 24
-; LED 0 red, LED 1 green, LED 2 blue (half brightness):
-; #pragma pio_sim tx 0x00FF0000 0xFF000000 0x00008000
+; DMA writes LED 0 red, LED 1 green, LED 2 blue (half brightness):
+; #pragma pio_sim dma put 0x00FF0000 0xFF000000 0x00008000
 
 .program ws2812
 .side_set 1
@@ -743,7 +748,7 @@ function loadControls() {
 function selectSm(i, refresh = true) {
     sel = i;
     loadControls();
-    lastTxMessage = 'Not pushed yet';
+    lastTxMessage = 'Nothing put yet';
     lastRxMessage = 'Not read yet';
     if (refresh) updateUI();
 }
@@ -832,12 +837,12 @@ function parseUserNumber(input) {
     return NaN;
 }
 
-btnPushTx.addEventListener('click', () => {
+btnPutTx.addEventListener('click', () => {
     const val = parseUserNumber(txInput.value);
     if (!isNaN(val)) {
         if (cur().pushTx(val)) {
             const hex = '0x' + (val >>> 0).toString(16).toUpperCase().padStart(8, '0');
-            lastTxMessage = `Pushed: ${hex}`;
+            lastTxMessage = `Put ${hex}`;
             updateUI();
             txInput.value = '';
         } else {
@@ -854,11 +859,11 @@ btnPushTx.addEventListener('click', () => {
 
 txInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
-        btnPushTx.click();
+        btnPutTx.click();
     }
 });
 
-btnPopRx.addEventListener('click', () => {
+btnGetRx.addEventListener('click', () => {
     const val = cur().pullRx();
     if (val === null) {
         lastRxMessage = 'RX FIFO is empty';
@@ -867,7 +872,7 @@ btnPopRx.addEventListener('click', () => {
     }
 
     const hex = '0x' + (val >>> 0).toString(16).toUpperCase().padStart(8, '0');
-    lastRxMessage = `Popped: ${hex}`;
+    lastRxMessage = `Got ${hex}`;
     updateUI();
 });
 
@@ -1161,27 +1166,29 @@ function updateUI(isStep = false) {
     regIsr.textContent = hex8(sm.isr);
     regIsrCount.textContent = sm.isrCount;
 
+    // FIFOs, each from end to end: the system side (Put / Get, or DMA) and
+    // the state machine side (pull / push, autopull / autopush).
     setFifoSlots(txFifoList, sm.txFifo, sm.txCapacity());
-    // `; #pragma pio_sim tx` / `rx drain`: where the feed is, what was read.
-    const feed = sm.feed;
-    txFeedNote.style.display = feed.tx.length ? '' : 'none';
-    if (feed.tx.length) {
-        const sent = feed.txLoop ? sm.feedPos : Math.min(sm.feedPos, feed.tx.length);
-        txFeedNote.textContent = `Fed by '#pragma pio_sim tx': ${sent} of ${feed.tx.length} words put in` +
-            (feed.txLoop ? ' (loops)' : sent === feed.tx.length ? ' (all sent)' : '');
-    }
-    rxDrainNote.style.display = feed.rxDrain ? '' : 'none';
-    if (feed.rxDrain) {
-        const last = sm.drained.slice(-8);
-        rxDrainNote.textContent = `Read by '#pragma pio_sim rx drain' (${sm.drained.length}${sm.drained.length >= 256 ? '+' : ''}), latest last: ` +
-            (last.length ? last.map(feedWordText).join(' ') : 'nothing yet');
+    setText(txSmSide, sm.txCapacity() === 0 ? 'none: joined into the RX FIFO (.fifo rx)'
+        : sm.autoPull ? `pull, autopull at ${sm.pullThresh} bits \u2192 OSR` : 'pull \u2192 OSR (autopull off)');
+    const dma = sm.dma;
+    txDmaNote.style.display = dma.put.length ? '' : 'none';
+    if (dma.put.length) {
+        const sent = dma.loop ? sm.dmaPos : Math.min(sm.dmaPos, dma.put.length);
+        setText(txDmaNote, `DMA put: ${sent} of ${dma.put.length} words written` +
+            (dma.loop ? ' (loops)' : sent === dma.put.length ? ' (all written)' : ''));
     }
 
     // In the put/get FIFO modes the RX FIFO storage is four registers.
     const fifoMode = sm.fifoMode;
     const rxAsRegs = fifoMode === 'txput' || fifoMode === 'txget' || fifoMode === 'putget';
     rxFifoTitle.textContent = rxAsRegs ? 'RX FIFO registers' : 'RX FIFO';
-    rxPopControls.style.display = rxAsRegs ? 'none' : 'flex';
+    rxSmEnd.style.display = rxAsRegs ? 'none' : '';
+    setText(rxSmSide, sm.rxCapacity() === 0 ? 'none: joined into the TX FIFO (.fifo tx)'
+        : sm.autoPush ? `ISR \u2192 push, autopush at ${sm.pushThresh} bits` : 'ISR \u2192 push (autopush off)');
+    // With DMA reading the RX FIFO, Get would find it empty: DMA's reads
+    // take its place.
+    rxGetControls.style.display = rxAsRegs || dma.get ? 'none' : 'flex';
     rxRegControls.style.display = fifoMode === 'txget' ? 'flex' : 'none';
     rxRegNote.style.display = rxAsRegs ? '' : 'none';
     if (rxAsRegs) {
@@ -1195,8 +1202,14 @@ function updateUI(isStep = false) {
     } else {
         setFifoSlots(rxFifoList, sm.rxFifo, sm.rxCapacity());
     }
-    txPushResult.textContent = lastTxMessage;
-    rxPopResult.textContent = lastRxMessage;
+    rxDmaNote.style.display = dma.get && !rxAsRegs ? '' : 'none';
+    if (dma.get) {
+        const last = sm.dmaRead.slice(-8);
+        setText(rxDmaNote, `DMA get has read ${sm.dmaRead.length}${sm.dmaRead.length >= 256 ? '+' : ''} words, latest last: ` +
+            (last.length ? last.map(fifoWordText).join(' ') : 'none yet'));
+    }
+    setText(txPutResult, lastTxMessage);
+    setText(rxGetResult, lastRxMessage);
 
     const allPins = emulator.getAllPinStates();
     gpioHexVal.textContent = '0x' + (allPins >>> 0).toString(16).toUpperCase().padStart(8, '0');
