@@ -53,6 +53,47 @@ const cfgFifoMode = document.getElementById('cfg-fifo-mode');
 const cfgClkDiv = document.getElementById('cfg-clkdiv');
 const cfgClkDivNote = document.getElementById('cfg-clkdiv-note');
 const regSysclk = document.getElementById('reg-sysclk');
+const cfgChip = document.getElementById('cfg-chip');
+const CHIP_KEY = 'pio_sim_chip_v1';
+try {
+    const savedChip = localStorage.getItem(CHIP_KEY);
+    if (savedChip === 'rp2040' || savedChip === 'rp2350') cfgChip.value = savedChip;
+} catch (e) {
+    // localStorage unavailable — keep the default.
+}
+emulator.chip = cfgChip.value;
+cfgChip.addEventListener('change', () => {
+    emulator.chip = cfgChip.value;
+    try { localStorage.setItem(CHIP_KEY, cfgChip.value); } catch (e) { /* ignore */ }
+    if (lastProgram) showWarnings(lastProgram);
+    updateUI();
+});
+
+// Features the RP2040 does not have, in what was assembled.
+function rp2350Only(program) {
+    const found = new Set();
+    for (const instr of program.memory) {
+        if (!instr) continue;
+        if (instr.prev || instr.next) found.add('irq prev/next');
+        if (instr.type === 'WAIT' && instr.source === 'jmppin') found.add('wait jmppin');
+        if (instr.type === 'MOV' && instr.dest === 'pindirs') found.add('mov pindirs');
+        if (instr.type === 'MOV' && (instr.dest === 'rxfifo' || instr.src === 'rxfifo')) found.add('mov rxfifo[]');
+    }
+    for (const c of program.smConfigs) {
+        if (!c) continue;
+        if (c.statusSel === 2) found.add('mov status on an IRQ flag');
+        if (['txput', 'txget', 'putget'].includes(c.fifoMode)) found.add(`.fifo ${c.fifoMode}`);
+        if (c.inCount !== undefined && c.inCount !== 32) found.add('IN_COUNT');
+    }
+    return [...found];
+}
+
+function showWarnings(program) {
+    const lines = program.warnings.map(w => `Line ${w.line}: warning: ${w.message}`);
+    const only = cfgChip.value === 'rp2040' ? rp2350Only(program) : [];
+    if (only.length) lines.push(`warning: Chip is RP2040, but the program uses RP2350 features: ${only.join(', ')}`);
+    warningMessage.textContent = lines.join('\n');
+}
 const latencyNote = document.getElementById('latency-note');
 const cfgInShiftDir = document.getElementById('cfg-in-shift-dir');
 const cfgOutShiftDir = document.getElementById('cfg-out-shift-dir');
@@ -566,6 +607,7 @@ function updateClkDivNote() {
     const who = multiSm() ? `SM${sel}, ` : '';
     const text = `With ${who}clock div ${sm.clkDiv}: an input change is seen ${l.external.bypassed} / ${l.external.synced} ` +
         `cycles later (bypassed / synchronized), the program's own output ${l.own.bypassed} / ${l.own.synced} cycles later` +
+        ` (JMP PIN: ${l.jmpOwn.bypassed} / ${l.jmpOwn.synced})` +
         (frac ? ' (± 1 with a fractional divider)' : '') + '.';
     cfgClkDivNote.textContent = text;
     cfgClkDivNote.style.display = '';
@@ -665,7 +707,11 @@ function assembleAndReset() {
         }
         // Addresses in the gutter; breakpoints stay on their source lines.
         codeView.setAssembly(program);
-        warningMessage.textContent = program.warnings.map(w => `Line ${w.line}: warning: ${w.message}`).join('\n');
+        if (program.chip) {
+            cfgChip.value = program.chip;
+            emulator.chip = program.chip;
+        }
+        showWarnings(program);
         codeView.setWarnings(program.warnings.map(w => w.line));
 
         applyProgramConfig(program);

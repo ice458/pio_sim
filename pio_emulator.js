@@ -33,6 +33,16 @@ const PIO_SM_CONFIG_DEFAULTS = {
     clkDiv: 1           // CLKDIV, 16.8 fixed point
 };
 
+// System clocks from a change on the pad to JMP PIN seeing it, with the
+// input synchroniser bypassed / engaged. Measured on a Pico and a Pico 2 (a
+// state machine sees its own output 1 / 3 clocks later with JMP PIN on
+// RP2040, 2 / 3 on RP2350). The other inputs (IN PINS, WAIT PIN/GPIO/
+// JMPPIN, MOV x, PINS) lag 1 / 3 on both chips, so 2 / 4 for own outputs.
+const PIO_JMP_PIN_LAG = {
+    rp2040: { bypassed: 0, synced: 2 },
+    rp2350: { bypassed: 1, synced: 2 }
+};
+
 class PioStateMachine {
     constructor(block, index) {
         this.block = block;
@@ -100,9 +110,12 @@ class PioStateMachine {
     // With a fractional divider it can vary by one cycle with the phase.
     inputLatency() {
         const c = sysclks => Math.max(1, Math.ceil(sysclks / this.clkDiv));
+        const jmp = PIO_JMP_PIN_LAG[this.block.chip];
         return {
             external: { bypassed: c(1), synced: c(3) },
-            own: { bypassed: c(2), synced: c(4) }
+            own: { bypassed: c(2), synced: c(4) },
+            // JMP PIN reads the pin through a shorter path (measured).
+            jmpOwn: { bypassed: c(jmp.bypassed + 1), synced: c(jmp.synced + 1) }
         };
     }
 
@@ -330,7 +343,7 @@ class PioStateMachine {
                 return taken;
             }
             case 'x!=y': return this.x !== this.y;
-            case 'pin': return this.getPinState(this.jmpPin) === 1;
+            case 'pin': return this.block.getJmpPinState(this.jmpPin) === 1;
             case '!osre': return this.osrCount < this.effPullThresh();
             default: return false;
         }
@@ -637,6 +650,9 @@ class PioEmulator {
         // INPUT_SYNC_BYPASS resets to 0: every input passes through the
         // 2-flipflop synchroniser. 1 = bypassed for that GPIO.
         this.inputSyncBypass = 0;
+        // Which chip's timing to follow: 'rp2040' or 'rp2350'. They differ in
+        // how fast JMP PIN sees a pin (PIO_JMP_PIN_LAG).
+        this.chip = 'rp2350';
         this.sms = [0, 1, 2, 3].map(i => new PioStateMachine(this, i));
         this.reset();
     }
@@ -655,6 +671,7 @@ class PioEmulator {
         this.inputsFf1 = 0;
         this.inputsFf2 = 0;
         this.inputsSeen = 0;
+        this.jmpPinSeen = 0;    // what JMP PIN reads (a shorter path)
 
         this.history = [];
         this.irq = 0;
@@ -823,6 +840,13 @@ class PioEmulator {
         return (this.inputsSeen >>> (pin & 0x1F)) & 1;
     }
 
+    // What JMP PIN observes. Measured, it lags the pad less than the other
+    // inputs do, and differently on each chip (PIO_JMP_PIN_LAG). WAIT
+    // JMPPIN, despite the name, uses the ordinary input path.
+    getJmpPinState(pin) {
+        return (this.jmpPinSeen >>> (pin & 0x1F)) & 1;
+    }
+
     // Write `count` bits of `data` to pin levels or directions starting at
     // GPIO `base`, wrapping after GPIO 31 (§11.5.6). State machines run in
     // number order within a cycle, so when several write the same pin on
@@ -938,6 +962,8 @@ class PioEmulator {
         this.inputsFf1 = this.padAt(tn - 1);
         this.inputsFf2 = this.padAt(tn - 2);
         this.inputsSeen = ((this.padAt(tn - 1) & bypass) | (this.padAt(tn - 3) & ~bypass)) >>> 0;
+        const jmp = PIO_JMP_PIN_LAG[this.chip] || PIO_JMP_PIN_LAG.rp2350;
+        this.jmpPinSeen = ((this.padAt(tn - jmp.bypassed) & bypass) | (this.padAt(tn - jmp.synced) & ~bypass)) >>> 0;
 
         this.clock++;
         // Show the level the next step will see.

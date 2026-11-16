@@ -191,6 +191,7 @@
                     <code>status_sel</code> (<code>tx</code>, <code>rx</code>, <code>irq</code>), <code>status_n</code>,
                     <code>fifo</code> (<code>txrx</code>, <code>tx</code>, <code>rx</code>, <code>txput</code>, <code>txget</code>, <code>putget</code>),
                     <code>clkdiv</code> (1-65535, e.g. <code>2.5</code>).
+                    <code>; #pragma pio_sim chip rp2040</code> (or <code>rp2350</code>) selects the chip whose timing to follow.
                     Settings the source does not name keep whatever the controls show.
                     Before the first <code>.program</code> a <code>config</code> line applies to every state machine;
                     inside a program, to the state machines running it; <code>config sm &lt;n&gt; ...</code> to that one only.
@@ -223,6 +224,11 @@
                         <option value="irq_handshake">IRQ Handshake (#pragma pio_sim irq)</option>
                         <option value="pingpong">Ping-Pong (2 state machines)</option>
                         <option value="shared_program">One program on 3 state machines (irq rel)</option>
+                    </select>
+                    <label style="margin-left: 12px;" title="Whose timing to follow. The chips differ in how fast JMP PIN sees a pin (measured). A '; #pragma pio_sim chip rp2040' line in the source sets this on Assemble.">Chip:</label>
+                    <select id="cfg-chip">
+                        <option value="rp2350">RP2350 (Pico 2)</option>
+                        <option value="rp2040">RP2040 (Pico)</option>
                     </select>
                 </div>
                 <textarea id="code-editor" spellcheck="false">
@@ -461,6 +467,7 @@
                         Alt+Click: Toggle INPUT_SYNC_BYPASS for this GPIO.<br>
                         Inputs reach the state machine 1 system clock late when bypassed and 3 through the
                         synchronizer, so it sees its own outputs 2 / 4 system clocks later (measured on RP2040 and RP2350).
+                        JMP PIN is faster: 1 / 3 on RP2040, 2 / 3 on RP2350 (also measured; see Chip).
                         <span id="latency-note"></span>
                         <br>
                         <span

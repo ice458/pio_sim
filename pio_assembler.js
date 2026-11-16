@@ -154,6 +154,7 @@ class PioAssembler {
         this.globalSymbols = new Map(); // name -> { isLabel, expr, line, resolving }
         this.globalPragmas = [];
         this.warnings = [];             // [{ line, message }]: assembled anyway
+        this.chip = null;               // from `; #pragma pio_sim chip`
         this.states = [];               // finished programs
         this.inProgram = false;
         this.defaultPioVersion = 1;
@@ -1003,6 +1004,7 @@ class PioAssembler {
             stimuli,
             irqEvents,
             warnings: this.warnings,
+            chip: this.chip,
             programMap: result[0].programMap,
             programs: result,
             memory,
@@ -1238,8 +1240,18 @@ class PioAssembler {
             case 'irq': this.pragmaIrq(tokens, out.irqEvents); break;
             case 'config': this.pragmaConfig(tokens, out.config, out.configSeen, out); break;
             case 'sm': this.pragmaSm(tokens, out.smAssign); break;
+            case 'chip': {
+                // chip rp2040|rp2350: whose timing to follow.
+                const chip = (tokens[1] || '').toLowerCase();
+                if (!['rp2040', 'rp2350'].includes(chip) || tokens.length !== 2) {
+                    throw new Error(`#pragma pio_sim: expected 'chip rp2040' or 'chip rp2350'`);
+                }
+                if (this.chip && this.chip !== chip) throw new Error(`#pragma pio_sim: chip given twice`);
+                this.chip = chip;
+                break;
+            }
             default:
-                throw new Error(`#pragma pio_sim: unknown pragma '${tokens[0] || ''}' (expected pin, irq, config or sm)`);
+                throw new Error(`#pragma pio_sim: unknown pragma '${tokens[0] || ''}' (expected pin, irq, config, sm or chip)`);
         }
     }
 

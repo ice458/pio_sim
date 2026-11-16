@@ -32,6 +32,7 @@ The emulator follows the PIO chapters of the RP2040 and RP2350 datasheets, and t
 
 - **Settings start at the hardware reset values.** In particular OUT Count is 0, so `out pins` writes nothing until you set it, as on a real chip before the C setup code runs. Set the controls the way your `sm_config_*` calls would, or put the settings in the source with `.in` / `.out` / `.set` / `.fifo` / `.mov_status` or a `config` pragma.
 - **Input latency.** A pin reaches the state machine 1 system clock late when its synchronizer is bypassed and 3 through the 2-flipflop synchronizer (the reset default). A state machine sees its own outputs 2 / 4 system clocks later, the same on RP2040 and RP2350.
+- **JMP PIN and the Chip setting.** JMP PIN sees a pin sooner than the other inputs, and differently on each chip: a state machine's own output 1 / 3 system clocks later on RP2040, 2 / 3 on RP2350 (measured; the datasheets do not say). Choose the chip next to "Load Example", or put `; #pragma pio_sim chip rp2040` in the source. With RP2040 chosen, RP2350-only features give a warning.
 - **Clock divider.** One step is one state machine cycle. With a divider (the "Clock div" control, `.clock_div`, or `config clkdiv`), the input path still runs on the system clock, so input latency counted in state machine cycles gets shorter: at 2 the program sees its own output 1 / 2 cycles later, at 4 and above 1 / 1. Fractional dividers spread the extra clocks with a running total, as the hardware does.
 - **Pins that are not outputs.** Writing a pin with SET/OUT/MOV/side-set changes PIO's output register, but the pin only follows once it is an output (`set pindirs`, `out pindirs`, side-set `pindirs`, or Shift+click in the GPIO panel). The timing chart draws a pin PIO drives in green, an input in blue (the level on the pin), and a value written but not driven as a dashed line.
 - **Pin writes.** OUT and MOV write OUT Count pins, SET writes SET Count pins, and a side-set wins over an OUT/SET to the same pin on the same cycle. When several state machines write a pin on the same cycle, the highest-numbered one wins.
@@ -100,6 +101,8 @@ Syntax: `config <name> <value> [<name> <value> ...]`
 | `status_n` | 0-31 |
 | `fifo` | `txrx`, `tx`, `rx`, `txput`, `txget`, `putget` |
 | `clkdiv` | 1-65535, fractions such as `2.5` allowed (1/256 steps) |
+
+`; #pragma pio_sim chip rp2040` (or `rp2350`) selects the chip whose timing to follow, as the Chip control does.
 
 Settings the source does not name keep whatever the controls show. A `config` pragma overrides a directive (`.out`, `.in`, ...) that sets the same thing.
 

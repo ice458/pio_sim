@@ -105,19 +105,20 @@ header {
 }
 
 .g-line {
-    width: 30px;
+    width: 28px;
     text-align: right;
 }
 
 .g-addr {
-    width: 26px;
+    width: 22px;
     text-align: right;
     color: #4fc1ff;
 }
 
 .g-pcs {
-    width: 50px;
-    padding-left: 6px;
+    width: var(--pcs-width, 0px);
+    padding-left: 4px;
+    box-sizing: content-box;
 }
 
 .g-row.pc .g-line {

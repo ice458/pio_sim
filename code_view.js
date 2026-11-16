@@ -134,6 +134,10 @@ class CodeView {
     // Each running state machine's PC, and the selected one's.
     setPcs(marks, selectedSm, follow) {
         this.pcMarks = marks.map(m => ({ sm: m.sm, line: this.addrToLine.get(m.pc) })).filter(m => m.line !== undefined);
+        // The PC mark column is as wide as the marks it may need: one per
+        // running state machine, none with a single one.
+        const slots = marks.length > 1 ? marks.length : 0;
+        this.gutter.style.setProperty('--pcs-width', slots ? `${slots * 12 + 4}px` : '0px');
         const sel = this.pcMarks.find(m => m.sm === selectedSm);
         this.pcLine = sel ? sel.line : null;
         this.renderMarks();
