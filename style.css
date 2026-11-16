@@ -42,17 +42,238 @@ header {
     box-shadow: 0 2px 5px rgba(0,0,0,0.1);
 }
 
-#code-editor {
-    width: 100%;
-    height: 400px;
-    font-family: 'Consolas', 'Monaco', monospace;
-    font-size: 14px;
-    padding: 10px;
+/* Source editor: gutter + textarea over a layer that colours whole lines */
+.code-view {
+    display: flex;
+    height: 420px;
+    min-height: 120px;
+    resize: vertical;
+    overflow: hidden;
     border: 1px solid #ccc;
     border-radius: 4px;
-    resize: vertical;
     background-color: #1e1e1e;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 14px;
+    line-height: 20px;
+}
+
+.code-gutter {
+    flex: none;
+    overflow: hidden;
+    background-color: #252526;
+    border-right: 1px solid #3c3c3c;
+    color: #858585;
+    user-select: none;
+}
+
+.code-gutter-inner,
+.code-layer-inner {
+    padding: 10px 0;
+}
+
+.g-row {
+    display: flex;
+    align-items: center;
+    height: 20px;
+    white-space: nowrap;
+}
+
+.g-row span {
+    display: inline-block;
+}
+
+.g-bp {
+    width: 16px;
+    text-align: center;
+}
+
+.g-row.has-addr .g-bp,
+.g-row.has-addr .g-line,
+.g-row.has-addr .g-addr {
+    cursor: pointer;
+}
+
+.g-row.has-addr:hover .g-bp::before {
+    content: '●';
+    color: #6b2a2a;
+}
+
+.g-row.bp .g-bp::before,
+.g-row.bp.has-addr:hover .g-bp::before {
+    content: '●';
+    color: #e53935;
+}
+
+.g-line {
+    width: 30px;
+    text-align: right;
+}
+
+.g-addr {
+    width: 26px;
+    text-align: right;
+    color: #4fc1ff;
+}
+
+.g-pcs {
+    width: 50px;
+    padding-left: 6px;
+}
+
+.g-row.pc .g-line {
+    color: #fff;
+}
+
+.g-row.bp .g-line,
+.g-row.bp .g-addr {
+    color: #e57373;
+}
+
+/* A state machine's PC mark, one colour per state machine */
+.g-pc {
+    display: inline-block;
+    width: 11px;
+    height: 14px;
+    line-height: 14px;
+    margin-right: 1px;
+    border-radius: 2px;
+    font-size: 10px;
+    text-align: center;
+    color: #fff;
+    cursor: pointer;
+}
+
+.g-pc.sm0 { background-color: #1e88e5; }
+.g-pc.sm1 { background-color: #43a047; }
+.g-pc.sm2 { background-color: #fb8c00; }
+.g-pc.sm3 { background-color: #8e24aa; }
+
+.code-main {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+}
+
+.code-layer {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.l-row {
+    height: 20px;
+    white-space: pre;
+    padding: 0 10px;
+}
+
+.l-row.pc { background-color: #264f78; }
+.l-row.bp { background-color: rgba(229, 57, 53, 0.18); }
+.l-row.pc.bp { background-color: #5a3a5c; }
+.l-row.error { background-color: rgba(244, 67, 54, 0.45); }
+
+.l-ghost {
+    color: transparent;
+}
+
+.l-note {
+    color: #6a9955;
+    font-style: italic;
+}
+
+textarea.code-input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 10px;
+    border: 0;
+    outline: none;
+    resize: none;
+    background: transparent;
     color: #d4d4d4;
+    caret-color: #fff;
+    font: inherit;
+    line-height: 20px;
+    white-space: pre;
+    overflow: auto;
+    tab-size: 8;
+}
+
+/* Several state machines: what belongs to the selected one is framed in its
+   colour; what all of them share is tagged. */
+body.multi-sm .sm-scope {
+    border: 2px solid var(--sm-color, #007acc);
+    background-color: var(--sm-tint, transparent);
+    border-radius: 6px;
+    padding: 2px 12px 10px;
+    margin: 10px 0;
+}
+
+.scope-note {
+    font-size: 0.8em;
+    color: var(--sm-color, #555);
+}
+
+.shared-tag {
+    display: inline-block;
+    vertical-align: middle;
+    margin-left: 6px;
+    padding: 1px 7px;
+    border: 1px solid #bbb;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: normal;
+    color: #666;
+    background-color: #fff;
+}
+
+.clock-display {
+    margin-left: 12px;
+    font-size: 0.55em;
+    font-weight: normal;
+    font-family: 'Consolas', monospace;
+    color: #555;
+}
+
+.warning {
+    color: #b45309;
+    white-space: pre-line;
+    font-size: 0.9em;
+}
+
+.l-row.warning { background-color: rgba(255, 183, 77, 0.22); }
+
+.chart-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    margin-top: 4px;
+    font-size: 0.78em;
+    color: #555;
+}
+
+.lg-line {
+    display: inline-block;
+    width: 18px;
+    height: 0;
+    margin-right: 4px;
+    vertical-align: middle;
+    border-top: 2px solid;
+}
+
+.lg-driven { border-color: #2e9e4f; }
+.lg-input { border-color: #1e88e5; }
+.lg-latch { border-top: 2px dashed #9e9e9e; }
+.lg-stim { border-color: #ef6c00; }
+.lg-irq { border-color: #7b1fa2; }
+
+.code-note {
+    margin-top: 4px;
+    font-size: 0.8em;
+    color: #b45309;
 }
 
 .controls {

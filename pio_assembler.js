@@ -153,6 +153,7 @@ class PioAssembler {
         // without a .program line).
         this.globalSymbols = new Map(); // name -> { isLabel, expr, line, resolving }
         this.globalPragmas = [];
+        this.warnings = [];             // [{ line, message }]: assembled anyway
         this.states = [];               // finished programs
         this.inProgram = false;
         this.defaultPioVersion = 1;
@@ -163,6 +164,7 @@ class PioAssembler {
 
         for (let i = 0; i < scanned.length; i++) {
             this.line = i + 1;
+            if (scanned[i].typo) this.warnings.push({ line: this.line, message: scanned[i].typo });
             if (scanned[i].pragma !== null) {
                 this.pragmas.push({ body: scanned[i].pragma, line: this.line });
                 continue;
@@ -220,10 +222,11 @@ class PioAssembler {
         for (const raw of rawLines) {
             let code = '';
             let pragma = null;
+            let typo = null;
 
             if (state === 'passthrough') {
                 if (raw.trim() === '%}') state = 'code';
-                out.push({ code, pragma });
+                out.push({ code, pragma, typo });
                 continue;
             }
 
@@ -252,7 +255,17 @@ class PioAssembler {
                     if (code.trim() === '') {
                         const text = raw.substring(i + (raw[i] === ';' ? 1 : 2));
                         const m = text.match(/^\s*#pragma\s+pio_sim\b(.*)$/i);
-                        if (m) pragma = m[1].split(/;|\/\//)[0];
+                        if (m) {
+                            pragma = m[1].split(/;|\/\//)[0];
+                        } else {
+                            // A pragma that looks like one of ours but does not
+                            // say pio_sim would be ignored without a word.
+                            const t = text.match(/^\s*#\s*pragma[\s_]+(\S+)/i);
+                            if (t && /^(pin|irq|config|sm|pio\S*)$/i.test(t[1])) {
+                                typo = `'#pragma ${t[1]}' is not a simulator pragma and is ignored; ` +
+                                    `simulator pragmas start with '; #pragma pio_sim'`;
+                            }
+                        }
                     }
                     break;
                 }
@@ -268,7 +281,7 @@ class PioAssembler {
                 code += raw[i];
                 i++;
             }
-            out.push({ code, pragma });
+            out.push({ code, pragma, typo });
         }
         return out;
     }
@@ -989,6 +1002,7 @@ class PioAssembler {
             config: smConfigs[0] || result[0].config,
             stimuli,
             irqEvents,
+            warnings: this.warnings,
             programMap: result[0].programMap,
             programs: result,
             memory,

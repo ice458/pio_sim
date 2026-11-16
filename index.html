@@ -211,7 +211,7 @@
 
         <div class="main-content">
             <div class="editor-section">
-                <h2>Assembly Code</h2>
+                <h2>Assembly Code <span class="shared-tag multi-sm-only" title="All state machines run from one 32-word instruction memory">shared instruction memory</span></h2>
                 <div style="margin-bottom: 10px;">
                     <label>Load Example:</label>
                     <select id="example-select">
@@ -228,9 +228,10 @@
                 <textarea id="code-editor" spellcheck="false">
 .program blink
 
+    set pindirs, 1   ; GPIO 0 as an output
 .wrap_target
-    set pins, 1   ; Turn on
-    set pins, 0   ; Turn off
+    set pins, 1      ; Turn on
+    set pins, 0      ; Turn off
 .wrap
                 </textarea>
                 <div class="controls">
@@ -251,12 +252,14 @@
                     </label>
                 </div>
                 <div id="error-message" class="error"></div>
+                <div id="warning-message" class="warning"></div>
 
-                <div id="program-display" class="program-display"></div>
 
+                <div class="sm-scope">
                 <div class="sm-tabs-row multi-sm-only">
                     <span class="sm-tabs-label">Settings for</span>
                     <div class="sm-tabs" id="sm-tabs-config"></div>
+                    <span class="scope-note">this state machine only</span>
                 </div>
                 <h3>Pin Configuration</h3>
                 <div class="control-panel pin-config">
@@ -299,15 +302,6 @@
                         OUT Count is 0 (the hardware reset value), so OUT and MOV to PINS / PINDIRS write no pins.
                         Set OUT Count, or add <code>.out &lt;count&gt;</code> to the program.
                     </div>
-                </div>
-                <h3>Timing Chart Pins</h3>
-                <div class="control-panel">
-                    <div style="font-size: 0.8em; color: #666; margin-bottom: 5px;">Select pins to display in timing
-                        chart.</div>
-                    <div class="gpio-indicators" id="timing-pin-selector"></div>
-                    <div style="font-size: 0.8em; color: #666; margin: 10px 0 5px;">Select registers to display as bus
-                        signals.</div>
-                    <div id="timing-reg-selector" class="reg-selector"></div>
                 </div>
                 <h3>Shift & FIFO Control</h3>
                 <div class="control-panel pin-config">
@@ -370,11 +364,23 @@
                     </div>
                     <div id="cfg-clkdiv-note" class="config-note" style="display: none;"></div>
                 </div>
+                </div>
+
+                <h3>Timing Chart Pins <span class="shared-tag multi-sm-only">shared</span></h3>
+                <div class="control-panel">
+                    <div style="font-size: 0.8em; color: #666; margin-bottom: 5px;">Select pins to display in timing
+                        chart.</div>
+                    <div class="gpio-indicators" id="timing-pin-selector"></div>
+                    <div style="font-size: 0.8em; color: #666; margin: 10px 0 5px;">Select registers to display as bus
+                        signals.</div>
+                    <div id="timing-reg-selector" class="reg-selector"></div>
+                </div>
             </div>
 
             <div class="status-section">
                 <h2>State <span id="status-indicator"
-                        style="font-size: 0.6em; padding: 2px 5px; border-radius: 3px;">STOPPED</span></h2>
+                        style="font-size: 0.6em; padding: 2px 5px; border-radius: 3px;">STOPPED</span>
+                    <span class="clock-display">Clock: <span id="reg-clock">0</span><span id="reg-sysclk"></span></span></h2>
                 <div class="multi-sm-only">
                     <table class="sm-summary" id="sm-summary">
                         <thead>
@@ -382,14 +388,16 @@
                         </thead>
                         <tbody></tbody>
                     </table>
-                    <div class="sm-tabs-row">
-                        <span class="sm-tabs-label">Details for</span>
-                        <div class="sm-tabs" id="sm-tabs-state"></div>
-                    </div>
+                </div>
+                <div class="sm-scope">
+                <div class="sm-tabs-row multi-sm-only">
+                    <span class="sm-tabs-label">Details for</span>
+                    <div class="sm-tabs" id="sm-tabs-state"></div>
+                    <span class="scope-note">this state machine only</span>
                 </div>
                 <div class="registers">
                     <div class="reg">PC: <span id="reg-pc">0</span></div>
-                    <div class="reg">Clock: <span id="reg-clock">0</span><span id="reg-sysclk"></span></div>
+                    <div class="reg">Cycles: <span id="reg-cycles">0</span></div>
                     <div class="reg">X: <span id="reg-x">0x00000000</span></div>
                     <div class="reg">Y: <span id="reg-y">0x00000000</span></div>
                     <div class="reg">OSR: <span id="reg-osr">0x00000000</span> (<span id="reg-osr-count">0</span>)</div>
@@ -430,9 +438,10 @@
                         <ul id="rx-fifo-list"></ul>
                     </div>
                 </div>
+                </div>
 
                 <div class="pin-output">
-                    <h4>GPIO State (32-bit)</h4>
+                    <h4>GPIO State (32-bit) <span class="shared-tag multi-sm-only">shared</span></h4>
                     <div class="hex-display">Value: <span id="gpio-hex-val">0x00000000</span></div>
                     <div class="hex-display sync-ff-row"
                         title="Stage 1 of the 2-FF input synchronizer (latches the pad value each clock).">
@@ -483,10 +492,17 @@
                     </div>
                 </div>
 
-                <h3 id="timing-chart-title">Timing Chart (GPIO 0-3)</h3>
+                <h3><span id="timing-chart-title">Timing Chart (GPIO 0-3)</span> <span class="shared-tag multi-sm-only">shared</span></h3>
                 <canvas id="timing-chart" width="600" height="200"></canvas>
+                <div class="chart-legend">
+                    <span><i class="lg-line lg-driven"></i>driven by PIO (output)</span>
+                    <span><i class="lg-line lg-input"></i>input: level on the pin</span>
+                    <span><i class="lg-line lg-latch"></i>written by PIO, not driven (pin is an input; <code>set pindirs</code>)</span>
+                    <span><i class="lg-line lg-stim"></i>pragma waveform</span>
+                    <span><i class="lg-line lg-irq"></i>IRQ flag</span>
+                </div>
 
-                <h3>Interrupts (IRQ)</h3>
+                <h3>Interrupts (IRQ) <span class="shared-tag multi-sm-only">shared</span></h3>
                 <div style="font-size: 0.8em; color: #666; margin-bottom: 5px;">
                     Click to toggle IRQ flag.
                 </div>
@@ -508,6 +524,7 @@
 
     <script src="pio_assembler.js"></script>
     <script src="pio_emulator.js"></script>
+    <script src="code_view.js"></script>
     <script src="main.js"></script>
 </body>
 

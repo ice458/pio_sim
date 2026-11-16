@@ -884,6 +884,7 @@ class PioEmulator {
             sysclk: t,
             pad,
             pins: this.pins,
+            pindirs: this.pindirs,
             inputs: this.inputs,
             irq: this.irq,
             // SM0, kept at the top level for single state machine use.

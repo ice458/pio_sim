@@ -12,6 +12,8 @@ const btnReset = document.getElementById('btn-reset');
 const errorMessage = document.getElementById('error-message');
 
 const regPc = document.getElementById('reg-pc');
+const regCycles = document.getElementById('reg-cycles');
+const warningMessage = document.getElementById('warning-message');
 const regClock = document.getElementById('reg-clock');
 const regX = document.getElementById('reg-x');
 const regY = document.getElementById('reg-y');
@@ -87,7 +89,6 @@ const TIMING_REGS = [
     { key: 'osr', label: 'OSR', format: v => '0x' + (v >>> 0).toString(16).toUpperCase() },
     { key: 'isr', label: 'ISR', format: v => '0x' + (v >>> 0).toString(16).toUpperCase() }
 ];
-const programDisplay = document.getElementById('program-display');
 
 // The state machine whose details and settings are shown.
 let sel = 0;
@@ -98,7 +99,15 @@ let lastProgram = null;
 
 let runInterval = null;
 let runMode = null; // 'interval' | 'raf'
-const breakpoints = new Set();
+// Breakpoints are set on source lines in the editor's gutter; this is
+// their instruction addresses for the run loop.
+let breakpoints = new Set();
+const codeView = new CodeView(codeEditor, {
+    onBreakpointsChanged: () => { breakpoints = codeView.breakpointAddrs(); },
+    onSelectSm: i => selectSm(i)
+});
+// Source text of each instruction address, for the state machine summary.
+let addrText = new Map();
 let lastRxMessage = 'Not read yet';
 let lastTxMessage = 'Not pushed yet';
 
@@ -209,9 +218,10 @@ const examples = {
     blink: {
         code: `.program blink
 
+    set pindirs, 1   ; GPIO 0 as an output
 .wrap_target
-    set pins, 1   ; Turn on
-    set pins, 0   ; Turn off
+    set pins, 1      ; Turn on
+    set pins, 0      ; Turn off
 .wrap`,
         config: {
             outBase: 0, setBase: 0, sidesetBase: 0, inBase: 0, jmpPin: 0,
@@ -223,7 +233,8 @@ const examples = {
         code: `.program pwm
 .side_set 1 opt
 
-; Setup: Load Period into ISR
+; Setup: GPIO 0 (side-set) as an output, load Period into ISR
+    set pindirs, 1         ; GPIO 0 as an output
     pull block      ; 1. Push Period (e.g. 8) to TX FIFO
     out isr, 32     ; 2. ISR = Period
 
@@ -293,6 +304,7 @@ is_high:
 ; Simulator settings, loaded on Assemble:
 ; #pragma pio_sim config set_base 0 set_count 1 in_base 0
 
+    set pindirs, 1  ; GPIO 0 as an output
 .wrap_target
     wait 1 pin 5    ; Wait for GPIO 5 High
     set pins, 1     ; Copy it to GPIO 0
@@ -312,6 +324,7 @@ is_high:
 
 .program ping_sm0
 ; #pragma pio_sim config set_base 0 set_count 1
+    set pindirs, 1     ; GPIO 0 as an output
 .wrap_target
     set pins, 1        ; SM0 work: pulse GPIO 0
     set pins, 0
@@ -321,6 +334,7 @@ is_high:
 
 .program pong_sm1
 ; #pragma pio_sim config set_base 1 set_count 1
+    set pindirs, 1     ; GPIO 1 as an output
 .wrap_target
     wait 1 irq 0       ; stall until SM0 raises IRQ 0 (clears it)
     set pins, 1        ; SM1 work: pulse GPIO 1
@@ -349,6 +363,7 @@ is_high:
 
 .program relay
 ; #pragma pio_sim config set_count 1
+    set pindirs, 1     ; this SM's pin as an output
 .wrap_target
     wait 1 irq 4 rel   ; SM n waits on flag 4+n
     set pins, 1 [3]
@@ -374,6 +389,7 @@ is_high:
 
 ; #pragma pio_sim config set_base 0 set_count 1
 
+    set pindirs, 1  ; GPIO 0 as an output
 .wrap_target
     set pins, 1     ; Do this side's work
     set pins, 0
@@ -392,7 +408,7 @@ exampleSelect.addEventListener('change', () => {
     const key = exampleSelect.value;
     if (examples[key]) {
         const ex = examples[key];
-        codeEditor.value = ex.code;
+        codeView.value = ex.code;
 
         // Every state machine's settings go back to reset values and the
         // example's settings go to SM0, so nothing is left over from the
@@ -642,67 +658,14 @@ function assembleAndReset() {
         lastProgram = program;
         if (!emulator.sms[sel].enabled) sel = emulator.sms.findIndex(sm => sm.enabled) >= 0 ? emulator.sms.findIndex(sm => sm.enabled) : 0;
 
-        programDisplay.innerHTML = '';
-        programDisplay.style.display = 'block';
-
-        // Every program in instruction memory order, with a name row when
-        // there is more than one.
-        const several = program.programs.length > 1;
-        const items = [];
-        for (const p of [...program.programs].sort((a, b) => a.offset - b.offset)) {
-            if (several) {
-                const runs = program.smPrograms.map((idx, i) => program.programs[idx] === p ? `SM${i}` : null).filter(x => x);
-                items.push({ header: `.program ${p.name}  —  ${runs.length ? runs.join(', ') : 'not running'}  (address ${p.offset}-${p.offset + p.length - 1})` });
-            }
-            items.push(...p.programMap);
+        addrText = new Map();
+        for (const p of program.programs) {
+            for (const m of p.programMap) addrText.set(m.pc, m.text.split(';')[0].split('//')[0].trim());
         }
-
-        items.forEach(item => {
-            if (item.header) {
-                const h = document.createElement('div');
-                h.className = 'program-header';
-                h.textContent = item.header;
-                programDisplay.appendChild(h);
-                return;
-            }
-            const div = document.createElement('div');
-            div.className = 'program-line';
-            div.id = `prog-line-${item.pc}`;
-            div.title = 'Click line number to toggle breakpoint';
-
-            const bpSpan = document.createElement('span');
-            bpSpan.className = 'bp-marker';
-            bpSpan.textContent = ' ';
-            bpSpan.addEventListener('click', (e) => {
-                e.stopPropagation();
-                toggleBreakpoint(item.pc);
-            });
-
-            const pcSpan = document.createElement('span');
-            pcSpan.className = 'pc';
-            pcSpan.textContent = item.pc.toString().padStart(2, '0');
-            pcSpan.addEventListener('click', (e) => {
-                e.stopPropagation();
-                toggleBreakpoint(item.pc);
-            });
-
-            const codeSpan = document.createElement('span');
-            codeSpan.className = 'code';
-            codeSpan.textContent = item.text;
-
-            // Which state machines are at this address.
-            const badges = document.createElement('span');
-            badges.className = 'pc-badges';
-
-            div.appendChild(bpSpan);
-            div.appendChild(pcSpan);
-            div.appendChild(badges);
-            div.appendChild(codeSpan);
-            programDisplay.appendChild(div);
-        });
-
-        // Clear stale breakpoints when re-assembling; instruction mapping may differ.
-        breakpoints.clear();
+        // Addresses in the gutter; breakpoints stay on their source lines.
+        codeView.setAssembly(program);
+        warningMessage.textContent = program.warnings.map(w => `Line ${w.line}: warning: ${w.message}`).join('\n');
+        codeView.setWarnings(program.warnings.map(w => w.line));
 
         applyProgramConfig(program);
         loadControls();
@@ -712,8 +675,10 @@ function assembleAndReset() {
         console.log("Assembled:", program);
     } catch (e) {
         errorMessage.textContent = e.message;
+        warningMessage.textContent = '';
         console.error(e);
-        programDisplay.style.display = 'none';
+        const m = /^Line (\d+):/.exec(e.message);
+        codeView.setError(m ? parseInt(m[1]) : null);
     }
 }
 
@@ -749,16 +714,6 @@ function applyProgramConfig(program) {
 // A breakpoint stops the run when any state machine reaches its address.
 function atBreakpoint() {
     return emulator.enabledSms().some(sm => breakpoints.has(sm.pc));
-}
-
-function toggleBreakpoint(pc) {
-    if (breakpoints.has(pc)) {
-        breakpoints.delete(pc);
-    } else {
-        breakpoints.add(pc);
-    }
-    const line = document.getElementById(`prog-line-${pc}`);
-    if (line) line.classList.toggle('breakpoint', breakpoints.has(pc));
 }
 
 function toggleRunStop() {
@@ -849,11 +804,8 @@ const hex8 = v => '0x' + (v >>> 0).toString(16).toUpperCase().padStart(8, '0');
 
 // Short text of the instruction a state machine is at.
 function instrText(addr) {
-    const el = document.getElementById(`prog-line-${addr}`);
-    if (!el) return emulator.instructions[addr] ? '' : '(empty: jmp 0)';
-    const codeEl = el.querySelector('.code');
-    const code = codeEl ? codeEl.textContent : '';
-    return code.split(';')[0].trim();
+    if (addrText.has(addr)) return addrText.get(addr);
+    return emulator.instructions[addr] ? '' : '(empty: jmp 0)';
 }
 
 // The summary rows and the tab buttons are made once and only updated
@@ -892,8 +844,14 @@ function setText(el, text) {
     if (el.textContent !== text) el.textContent = text;
 }
 
+const SM_COLORS = ['#1e88e5', '#43a047', '#fb8c00', '#8e24aa'];
+const SM_TINTS = ['rgba(30, 136, 229, 0.05)', 'rgba(67, 160, 71, 0.05)', 'rgba(251, 140, 0, 0.06)', 'rgba(142, 36, 170, 0.05)'];
+
 function updateSmPanels() {
     const multi = multiSm();
+    document.body.classList.toggle('multi-sm', multi);
+    document.body.style.setProperty('--sm-color', SM_COLORS[sel]);
+    document.body.style.setProperty('--sm-tint', SM_TINTS[sel]);
     document.querySelectorAll('.multi-sm-only').forEach(el => { el.style.display = multi ? '' : 'none'; });
     document.querySelectorAll('.sm-suffix').forEach(el => setText(el, multi ? ` (SM${sel})` : ''));
     if (!multi) return;
@@ -949,6 +907,7 @@ function updateUI(isStep = false) {
     }
 
     regPc.textContent = sm.pc;
+    regCycles.textContent = sm.cycles;
     regClock.textContent = emulator.clock;
     const anyDivider = emulator.enabledSms().some(s => s.clkDiv !== 1);
     regSysclk.textContent = anyDivider ? ` (system clock ${emulator.sysclk})` : '';
@@ -1038,35 +997,9 @@ function updateUI(isStep = false) {
         flag.title = scheduled ? `IRQ ${i}: set/cleared by #pragma pio_sim irq` : `IRQ ${i}`;
     }
 
-    const activeLines = programDisplay.querySelectorAll('.program-line.active');
-    activeLines.forEach(el => el.classList.remove('active'));
-    programDisplay.querySelectorAll('.pc-badges').forEach(el => { el.innerHTML = ''; });
-
-    // Every running state machine's PC, as a badge, when there are several.
-    if (multiSm()) {
-        emulator.sms.forEach((s, i) => {
-            if (!s.enabled) return;
-            const line = document.getElementById(`prog-line-${s.pc}`);
-            if (!line) return;
-            const badge = document.createElement('span');
-            badge.className = `pc-badge sm${i}`;
-            badge.textContent = `SM${i}`;
-            line.querySelector('.pc-badges').appendChild(badge);
-        });
-    }
-
-    const currentLine = sm.enabled ? document.getElementById(`prog-line-${sm.pc}`) : null;
-    if (currentLine) {
-        currentLine.classList.add('active');
-        const parent = currentLine.parentElement;
-        if (parent) {
-            const lineTop = currentLine.offsetTop - parent.offsetTop;
-            const lineBottom = lineTop + currentLine.offsetHeight;
-            if (lineTop < parent.scrollTop || lineBottom > parent.scrollTop + parent.clientHeight) {
-                currentLine.scrollIntoView({ block: 'nearest', behavior: 'auto' });
-            }
-        }
-    }
+    // The selected state machine's line is highlighted in the editor, and
+    // every running one is marked in the gutter when there are several.
+    codeView.setPcs(emulator.enabledSms().map(s => ({ sm: s.index, pc: s.pc })), sel, true);
 
     drawTimingChart();
 }
@@ -1225,22 +1158,61 @@ function drawTimingChart() {
     ctx.lineWidth = 2;
 
     for (let i = 0; i < numPins; i++) {
-        const pin = bitRows[i].bit;
-        const key = bitRows[i].key;
+        const row = bitRows[i];
+        const pin = row.bit;
         const yCenter = i * pinRowHeight + pinRowHeight / 2;
-        ctx.strokeStyle = bitRows[i].color;
+        const yOf = v => v ? yCenter - 10 : yCenter + 10;
+
+        if (row.key === 'pins') {
+            // A GPIO: its level on the pad, green while PIO drives it (an
+            // output) and blue while it is an input. A value written to the
+            // output register of a pin that is still an input does not reach
+            // the pad; it is drawn dashed.
+            const at = h => ({
+                driven: ((h.pindirs === undefined ? 0xFFFFFFFF : h.pindirs) >> pin) & 1,
+                pad: ((h.pad === undefined ? h.pins : h.pad) >> pin) & 1,
+                latch: (h.pins >> pin) & 1
+            });
+            for (let t = 0; t < visibleHistory.length; t++) {
+                const s = at(visibleHistory[t]);
+                const x = t * stepX;
+                const y = yOf(s.pad);
+                ctx.setLineDash([]);
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = s.driven ? '#2e9e4f' : '#1e88e5';
+                ctx.beginPath();
+                ctx.moveTo(x, t === 0 ? y : yOf(at(visibleHistory[t - 1]).pad));
+                ctx.lineTo(x, y);
+                ctx.lineTo(x + stepX, y);
+                ctx.stroke();
+                if (!s.driven && s.latch !== s.pad) {
+                    ctx.setLineDash([3, 3]);
+                    ctx.lineWidth = 1.5;
+                    ctx.strokeStyle = '#9e9e9e';
+                    ctx.beginPath();
+                    ctx.moveTo(x, yOf(s.latch));
+                    ctx.lineTo(x + stepX, yOf(s.latch));
+                    ctx.stroke();
+                }
+            }
+            ctx.setLineDash([]);
+            ctx.lineWidth = 2;
+            continue;
+        }
+
+        const key = row.key;
+        ctx.strokeStyle = row.color;
         ctx.beginPath();
         for (let t = 0; t < visibleHistory.length; t++) {
             const state = (visibleHistory[t][key] >> pin) & 1;
             const x = t * stepX;
-            const y = state ? yCenter - 10 : yCenter + 10;
+            const y = yOf(state);
 
             if (t === 0) {
                 ctx.moveTo(x, y);
             } else {
                 const prevState = (visibleHistory[t - 1][key] >> pin) & 1;
-                const prevY = prevState ? yCenter - 10 : yCenter + 10;
-                ctx.lineTo(x, prevY);
+                ctx.lineTo(x, yOf(prevState));
                 ctx.lineTo(x, y);
             }
             ctx.lineTo(x + stepX, y);
@@ -1358,7 +1330,7 @@ function drawTimingChart() {
 try {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved !== null && saved !== '') {
-        codeEditor.value = saved;
+        codeView.value = saved;
     }
 } catch (e) {
     // localStorage unavailable (private mode / quota) — silently skip.
