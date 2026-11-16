@@ -265,8 +265,9 @@ class CodeView {
             l.classList.toggle('bp', this.breakpointLines.has(line));
             l.classList.toggle('pc', !several && sms.length > 0);
             l.classList.toggle('pc-sel', several && !this.stale && line === this.pcLine);
-            l.classList.toggle('error', line === this.errorLine);
-            l.classList.toggle('warning', !this.stale && this.warningLines.has(line));
+            // Own class names: the page's .error / .warning styles must not apply.
+            l.classList.toggle('l-error', line === this.errorLine);
+            l.classList.toggle('l-warning', !this.stale && this.warningLines.has(line));
             if (several && sms.length > 0) {
                 const colours = sms.map(sm => CodeView.LINE_COLOURS[sm]);
                 l.style.background = colours.length === 1 ? colours[0]
