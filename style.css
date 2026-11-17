@@ -13,46 +13,195 @@ body {
     padding: 20px;
 }
 
+/* The title and the help sections on one line; an opened section takes a
+   line of its own. */
 header {
-    margin-bottom: 20px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 32px;
+    margin-bottom: 14px;
     border-bottom: 2px solid #007acc;
-    padding-bottom: 10px;
+    padding-bottom: 8px;
+}
+
+header h1 {
+    margin: 0;
+    font-size: 1.6em;
+}
+
+.header-links {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 24px;
+}
+
+.header-links details[open] {
+    flex-basis: 100%;
 }
 
 .main-content {
     display: flex;
-    gap: 20px;
 }
 
+/* The editor's share of the width; the splitter changes --split. */
 .editor-section {
-    flex: 1;
+    flex: 0 0 var(--split, 41.5%);
     /* Without this the default min-width:auto floors the item at its
        min-content width, which the non-wrapping program display makes as
        wide as the longest source line. */
     min-width: 0;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    /* A pane of its own that stays on screen while the page scrolls, so
-       the program stays beside the timing chart and the rest of the State
-       panel. What does not fit scrolls inside it. */
-    position: sticky;
-    top: 0;
-    align-self: flex-start;
-    max-height: 100vh;
-    overflow-y: auto;
-    scrollbar-width: thin;
-    box-sizing: border-box;
-    padding-right: 6px;
+    --pane-bg: #f0f0f0;
 }
 
-/* Keep their sizes in the height-limited pane: it scrolls instead. */
-.editor-section > * {
+/* Between the panes: drag to share the width. The grip shows it can be. */
+.pane-splitter {
+    flex: 0 0 16px;
+    position: relative;
+    cursor: col-resize;
+    touch-action: none;
+}
+
+.pane-splitter::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 7px;
+    width: 2px;
+    border-radius: 1px;
+    background-color: transparent;
+    transition: background-color 0.15s;
+}
+
+.pane-splitter::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 5px;
+    width: 6px;
+    height: 40px;
+    margin-top: -20px;
+    border-radius: 3px;
+    background: repeating-linear-gradient(to bottom, #9aa3ab 0 2px, transparent 2px 6px);
+}
+
+.pane-splitter:hover::before,
+.pane-splitter:focus-visible::before,
+.pane-splitter.dragging::before {
+    background-color: #007acc;
+}
+
+.pane-splitter:focus-visible {
+    outline: none;
+}
+
+/* While dragging, the whole page shows the resize cursor and no text gets
+   selected. */
+body.resizing,
+body.resizing * {
+    cursor: col-resize !important;
+    user-select: none !important;
+}
+
+/* Two columns: the page is the height of the window and each pane
+   scrolls on its own, so any part of one can sit beside any part of the
+   other (the program beside the timing chart, say). */
+@media (min-width: 901px) {
+    .container {
+        height: 100vh;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        padding-bottom: 12px;
+    }
+
+    header {
+        flex: none;
+        max-height: 45vh;
+        overflow-y: auto;
+    }
+
+    .main-content {
+        flex: 1;
+        min-height: 0;
+    }
+
+    .editor-section,
+    .status-section {
+        overflow-y: auto;
+        scrollbar-gutter: stable;
+        scrollbar-color: #9aa3ab transparent;
+    }
+
+    .editor-section {
+        padding-right: 4px;
+    }
+
+    /* Keep their sizes in the height-limited pane: it scrolls instead. */
+    .editor-section > * {
+        flex-shrink: 0;
+    }
+
+    /* The editor as tall as the window allows with Step / Run still in
+       view below it (dragging its corner still sets any height). */
+    .editor-section .code-view {
+        height: clamp(180px, calc(100vh - 320px), 560px);
+    }
+}
+
+/* "More below": shown at the foot of a pane while it has more to scroll
+   to. Takes no room of its own. */
+.pane-more {
+    position: sticky;
+    bottom: 0;
+    height: 0;
+    z-index: 5;
     flex-shrink: 0;
 }
 
+.pane-more-inner {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 52px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    padding-bottom: 8px;
+    box-sizing: border-box;
+    background: linear-gradient(to bottom, transparent, var(--pane-bg, #fff) 75%);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.pane-more.show .pane-more-inner {
+    opacity: 1;
+}
+
+.pane-more button {
+    padding: 3px 14px;
+    font-size: 12px;
+    border-radius: 12px;
+    background-color: #607d8b;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.pane-more.show button {
+    pointer-events: auto;
+}
+
 .status-section {
-    flex: 1.4;
+    flex: 1 1 0;
     min-width: 0;
+    --pane-bg: #fff;
     container: status / inline-size;
     background-color: #fff;
     padding: 20px;
@@ -1043,11 +1192,12 @@ button:disabled {
 
     /* One column: the editor is just the top of the page. */
     .editor-section {
-        position: static;
-        align-self: stretch;
-        max-height: none;
-        overflow: visible;
-        padding-right: 0;
+        flex: none;
+        margin-bottom: 20px;
+    }
+
+    .pane-splitter {
+        display: none;
     }
 
     .code-view {

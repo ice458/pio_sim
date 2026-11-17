@@ -371,6 +371,7 @@ class CodeView {
         // Remember where we put it (the browser may clamp the value), so
         // the scroll event this causes is not taken for the user's.
         this.autoScrollTop = this.input.scrollTop;
+        this.prevScrollTop = this.input.scrollTop;
         this.syncScroll();
     }
 }

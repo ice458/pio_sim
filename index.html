@@ -136,7 +136,8 @@
             <!-- <div class="dev-note" style="font-size: 0.9em; color: #777; margin-top: 4px;">このツールは現在開発中です。予告なく仕様が変更されます。
             </div> -->
 
-            <details class="about-section" style="margin-top: 32px; font-size: 0.85em; color: #777; line-height: 1.7;">
+            <div class="header-links">
+            <details class="about-section" style="font-size: 0.85em; color: #777; line-height: 1.7;">
                 <summary style="cursor: pointer;">About this tool</summary>
                 <p style="margin: 8px 0 0 0;">
                     A web-based emulator for the <strong>RP2040</strong> and <strong>RP2350</strong> Programmable I/O (<strong>PIO</strong>). Test and debug your PIO assembly code directly in the browser with real-time visualization of registers, FIFOs, GPIOs, and timing. 
@@ -146,7 +147,7 @@
                 </p>
             </details>
 
-            <details style="font-size: 0.85em; color: #777; margin-top: 4px;">
+            <details style="font-size: 0.85em; color: #777;">
                 <summary style="cursor: pointer;">Unsupported Features</summary>
                 <ul style="margin: 4px 0 0 1.2em; padding: 0;">
                     <li>Other PIO blocks: <code>irq prev</code> / <code>irq next</code> flags exist but nothing else drives them</li>
@@ -155,7 +156,7 @@
                 </ul>
             </details>
 
-            <details style="font-size: 0.85em; color: #777; margin-top: 4px; line-height: 1.7;">
+            <details style="font-size: 0.85em; color: #777; line-height: 1.7;">
                 <summary style="cursor: pointer;">Simulator pragmas (<code>#pragma pio_sim</code>): pin waveforms, IRQ events, FIFO data (DMA), settings, state machines</summary>
                 <p style="margin: 8px 0 0 0;">
                     Comment lines starting with <code>; #pragma pio_sim</code> set up the simulation from the source.
@@ -220,6 +221,7 @@
                     and when two write the same pin on the same cycle the higher-numbered one wins, as on the chip.
                 </p>
             </details>
+            </div>
         </header>
 
         <div class="main-content">
@@ -391,6 +393,9 @@
                 </div>
             </div>
 
+            <!-- Drag to share the width between the two panes; double-click: back to the default. -->
+            <div class="pane-splitter" id="pane-splitter" role="separator" aria-orientation="vertical" tabindex="0"
+                title="Drag to resize the panes. Double-click to reset."></div>
             <div class="status-section">
                 <h2>State <span id="status-indicator"
                         style="font-size: 0.6em; padding: 2px 5px; border-radius: 3px;">STOPPED</span>

@@ -285,6 +285,124 @@ for (let i = 0; i < 8; i++) {
 }
 
 timingSpan.addEventListener('change', () => drawTimingChart());
+
+// ---- the two panes ----------------------------------------------------------
+
+const mainContent = document.querySelector('.main-content');
+const editorPane = document.querySelector('.editor-section');
+const statusPane = document.querySelector('.status-section');
+const paneSplitter = document.getElementById('pane-splitter');
+const SPLIT_KEY = 'pio_sim_split_v1';
+const SPLIT_MIN_LEFT = 300;     // px: the editor's buttons in one row
+const SPLIT_MIN_RIGHT = 420;    // px: the State panel's tabs and FIFOs
+
+// The footer goes at the end of the State pane, which scrolls; in one
+// column that is still the end of the page.
+{
+    const footer = document.querySelector('footer');
+    if (footer) statusPane.appendChild(footer);
+}
+
+// The editor's share of the width, a fraction of the two panes; null for
+// the default. The timing chart is redrawn for its new width.
+let chartRedraw = 0;
+function setSplit(frac) {
+    if (frac === null) mainContent.style.removeProperty('--split');
+    else mainContent.style.setProperty('--split', `${(frac * 100).toFixed(2)}%`);
+    if (!chartRedraw) {
+        chartRedraw = requestAnimationFrame(() => { chartRedraw = 0; drawTimingChart(); });
+    }
+}
+
+function clampSplit(frac) {
+    const w = mainContent.getBoundingClientRect().width;
+    if (!w) return frac;
+    const lo = SPLIT_MIN_LEFT / w;
+    const hi = (w - paneSplitter.offsetWidth - SPLIT_MIN_RIGHT) / w;
+    return Math.max(lo, Math.min(hi, frac));
+}
+
+function saveSplit(frac) {
+    try {
+        if (frac === null) localStorage.removeItem(SPLIT_KEY);
+        else localStorage.setItem(SPLIT_KEY, frac.toFixed(4));
+    } catch (e) {
+        // Not stored; the split still applies until the page is left.
+    }
+}
+
+try {
+    const saved = parseFloat(localStorage.getItem(SPLIT_KEY));
+    if (saved > 0.1 && saved < 0.9) setSplit(clampSplit(saved));
+} catch (e) {
+    // No storage: the default split.
+}
+
+paneSplitter.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    paneSplitter.setPointerCapture(e.pointerId);
+    paneSplitter.classList.add('dragging');
+    document.body.classList.add('resizing');
+    let frac = null;
+    const move = ev => {
+        const r = mainContent.getBoundingClientRect();
+        frac = clampSplit((ev.clientX - r.left - paneSplitter.offsetWidth / 2) / r.width);
+        setSplit(frac);
+    };
+    const end = () => {
+        paneSplitter.removeEventListener('pointermove', move);
+        paneSplitter.removeEventListener('pointerup', end);
+        paneSplitter.removeEventListener('pointercancel', end);
+        paneSplitter.classList.remove('dragging');
+        document.body.classList.remove('resizing');
+        if (frac !== null) saveSplit(frac);
+    };
+    paneSplitter.addEventListener('pointermove', move);
+    paneSplitter.addEventListener('pointerup', end);
+    paneSplitter.addEventListener('pointercancel', end);
+});
+
+paneSplitter.addEventListener('dblclick', () => {
+    setSplit(null);
+    saveSplit(null);
+});
+
+// Arrow keys move it too, 2 % a press.
+paneSplitter.addEventListener('keydown', e => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    const r = mainContent.getBoundingClientRect();
+    const now = editorPane.getBoundingClientRect().width / r.width;
+    const frac = clampSplit(now + (e.key === 'ArrowLeft' ? -0.02 : 0.02));
+    setSplit(frac);
+    saveSplit(frac);
+});
+
+// "More below" at the foot of each pane while there is more to scroll to,
+// so controls further down are not missed. A click scrolls on.
+for (const pane of [editorPane, statusPane]) {
+    const more = document.createElement('div');
+    more.className = 'pane-more';
+    const inner = document.createElement('div');
+    inner.className = 'pane-more-inner';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = '▼ More below';
+    btn.title = 'This pane scrolls: more controls further down';
+    btn.addEventListener('click', () => pane.scrollBy({ top: pane.clientHeight * 0.8, behavior: 'smooth' }));
+    inner.appendChild(btn);
+    more.appendChild(inner);
+    pane.appendChild(more);
+    const update = () => {
+        const scrolls = getComputedStyle(pane).overflowY === 'auto';
+        more.classList.toggle('show', scrolls && pane.scrollTop + pane.clientHeight < pane.scrollHeight - 8);
+    };
+    pane.addEventListener('scroll', update, { passive: true });
+    const ro = new ResizeObserver(update);
+    ro.observe(pane);
+    for (const child of pane.children) ro.observe(child);
+}
 // The canvas matches its shown width, which follows the window.
 window.addEventListener('resize', () => drawTimingChart());
 
