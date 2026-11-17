@@ -1173,12 +1173,22 @@ function run() {
     const period = speedSel ? parseInt(speedSel.value) : 100;
 
     if (period === 0) {
-        // "Max" mode: run many steps per frame via rAF for smooth UI updates.
-        const STEPS_PER_FRAME = 200;
+        // "Max" mode: as many steps as fit in a slice of each frame. Not a
+        // fixed count: a count that is a multiple of the program's period
+        // (200 steps vs blink's 8) shows the very same state every frame,
+        // so the screen looks frozen while the clock runs.
+        const FRAME_BUDGET_MS = 8;
+        // And never more than this many, should the clock not move (a
+        // paused or virtual clock would otherwise never end the frame).
+        const FRAME_MAX_STEPS = 100000;
         runMode = 'raf';
         const loop = () => {
             if (runMode !== 'raf') return;
-            for (let i = 0; i < STEPS_PER_FRAME; i++) {
+            const until = performance.now() + FRAME_BUDGET_MS;
+            // The clock is read every 16 steps, from a random phase, so the
+            // count per frame is no multiple of anything in particular.
+            const phase = Math.floor(Math.random() * 16);
+            for (let i = 0; ; i++) {
                 emulator.step();
                 if (emulator.error) break;
                 if (atBreakpoint()) {
@@ -1186,6 +1196,7 @@ function run() {
                     stop();
                     return;
                 }
+                if (((i + phase) & 15) === 15 && (performance.now() >= until || i >= FRAME_MAX_STEPS)) break;
             }
             updateUI();
             if (emulator.error) {
@@ -1623,7 +1634,8 @@ function drawTimingChart() {
     const minor = stepX >= 4 ? 1 : major / 5;
     for (let t = 0; t <= maxCycles; t++) {
         const x = t * stepX;
-        const absClock = startIndex + t;
+        // Clock numbers, not array positions: old history is dropped.
+        const absClock = (visibleHistory.length ? visibleHistory[0].clock : startIndex) + t;
         if (absClock % minor !== 0) continue;
         ctx.strokeStyle = (absClock % major === 0) ? '#bbb' : '#eee';
         ctx.beginPath();

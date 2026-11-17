@@ -13,6 +13,9 @@
 
 // State machine settings and their reset values. They are configuration,
 // so reset() keeps them, as SM_RESTART does on the chip.
+// Steps of history kept for the timing chart (between this and twice it).
+const PIO_HISTORY_MAX = 4096;
+
 const PIO_SM_CONFIG_DEFAULTS = {
     outBase: 0,
     outCount: 0,        // PINCTRL_OUT_COUNT resets to 0
@@ -990,6 +993,12 @@ class PioEmulator {
 
         const padEnd = this.getAllPinStates();
         this.history[this.history.length - 1].padEnd = padEnd;
+        // Keep the latest steps only (the timing chart shows up to 500):
+        // at full speed an unbounded history grows by megabytes a second.
+        // Trimmed in batches, so it costs next to nothing per step.
+        if (this.history.length > 2 * PIO_HISTORY_MAX) {
+            this.history = this.history.slice(-PIO_HISTORY_MAX);
+        }
         this.padRecords.push({
             t, startPins, startDirs, endPins: this.pins, endDirs: this.pindirs,
             inputs: this.inputs & ~this.stimulusMask()
