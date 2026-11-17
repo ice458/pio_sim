@@ -16,6 +16,7 @@ body {
 /* The title and the help sections on one line; an opened section takes a
    line of its own. */
 header {
+    position: relative;
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
@@ -38,8 +39,69 @@ header h1 {
     gap: 2px 24px;
 }
 
-.header-links details[open] {
-    flex-basis: 100%;
+.header-links details {
+    font-size: 0.85em;
+    color: #777;
+}
+
+.header-links details[open] > summary {
+    color: #007acc;
+}
+
+/* What a help section opens, at the top of the State pane (moved there by
+   main.js): beside the editor, never over it. */
+.help-dock .help-panel {
+    position: relative;
+    margin: 0 0 18px;
+    padding: 10px 40px 12px 16px;
+    font-size: 0.85em;
+    color: #555;
+    line-height: 1.7;
+    background-color: #f7f9fb;
+    border: 1px solid #cfd8dc;
+    border-left: 3px solid #007acc;
+    border-radius: 6px;
+}
+
+.help-close {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    font-size: 18px;
+    line-height: 26px;
+    color: #607d8b;
+    background: transparent;
+    border-radius: 13px;
+}
+
+.help-close:hover {
+    background-color: #e3e8ec;
+    color: #333;
+}
+
+/* One line across the bottom of the page. */
+footer {
+    flex: none;
+    margin-top: 10px;
+    padding-top: 6px;
+    border-top: 1px solid #ccc;
+    text-align: center;
+    font-size: 0.85em;
+    color: #999;
+}
+
+footer p {
+    display: inline;
+    margin: 0;
+}
+
+footer p + p::before {
+    content: '|';
+    margin: 0 12px;
+    color: #bbb;
 }
 
 .main-content {
@@ -123,8 +185,6 @@ body.resizing * {
 
     header {
         flex: none;
-        max-height: 45vh;
-        overflow-y: auto;
     }
 
     .main-content {

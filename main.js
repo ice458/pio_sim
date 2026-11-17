@@ -296,11 +296,40 @@ const SPLIT_KEY = 'pio_sim_split_v1';
 const SPLIT_MIN_LEFT = 300;     // px: the editor's buttons in one row
 const SPLIT_MIN_RIGHT = 420;    // px: the State panel's tabs and FIFOs
 
-// The footer goes at the end of the State pane, which scrolls; in one
-// column that is still the end of the page.
+// Help sections: the header keeps the row of titles; what one opens shows
+// at the top of the State pane, beside the editor and not over it, so the
+// pragma reference can be read while writing the program. One at a time;
+// it stays until closed (its title again, or its x).
 {
-    const footer = document.querySelector('footer');
-    if (footer) statusPane.appendChild(footer);
+    const dock = document.createElement('div');
+    dock.className = 'help-dock';
+    statusPane.insertBefore(dock, statusPane.firstChild);
+    const helps = [...document.querySelectorAll('.header-links details')];
+    const show = () => {
+        for (const d of helps) d.helpPanel.style.display = d.open ? '' : 'none';
+    };
+    for (const d of helps) {
+        const panel = d.querySelector('.help-panel');
+        d.helpPanel = panel;
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'help-close';
+        close.textContent = '×';
+        close.title = 'Close';
+        close.addEventListener('click', () => { d.open = false; show(); });
+        panel.insertBefore(close, panel.firstChild);
+        dock.appendChild(panel);
+        // On the click itself (the toggle event comes later, after any
+        // further click), so the newest one is the one left open.
+        d.querySelector('summary').addEventListener('click', () => {
+            if (!d.open) {
+                for (const o of helps) if (o !== d) o.open = false;
+                statusPane.scrollTop = 0;
+            }
+        });
+        d.addEventListener('toggle', show);
+    }
+    show();
 }
 
 // The editor's share of the width, a fraction of the two panes; null for
