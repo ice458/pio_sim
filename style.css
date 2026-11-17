@@ -63,6 +63,36 @@ header h1 {
     border-radius: 6px;
 }
 
+/* Where a help section opened, after its title in the header. */
+.header-links details[open] > summary::after {
+    content: attr(data-where);
+    margin-left: 10px;
+    font-style: italic;
+    color: #999;
+}
+
+.help-title {
+    font-weight: 600;
+    color: #007acc;
+    margin-bottom: 4px;
+}
+
+/* On opening: a short flash where it appeared. */
+.help-dock .help-panel.flash {
+    animation: help-flash 1.2s ease-out;
+}
+
+@keyframes help-flash {
+    from {
+        background-color: #d6ecfb;
+        box-shadow: 0 0 0 4px rgba(0, 122, 204, 0.45);
+    }
+    to {
+        background-color: #f7f9fb;
+        box-shadow: 0 0 0 0 rgba(0, 122, 204, 0);
+    }
+}
+
 .help-close {
     position: absolute;
     top: 6px;

@@ -308,26 +308,43 @@ const SPLIT_MIN_RIGHT = 420;    // px: the State panel's tabs and FIFOs
     const show = () => {
         for (const d of helps) d.helpPanel.style.display = d.open ? '' : 'none';
     };
+    const twoColumns = window.matchMedia('(min-width: 901px)');
     for (const d of helps) {
+        const summary = d.querySelector('summary');
         const panel = d.querySelector('.help-panel');
         d.helpPanel = panel;
+        // Say where it opens, before and after: it is not under the title.
+        summary.title = 'Opens beside the editor, at the top of the State pane';
+        // The panel carries the title it was opened from, and a close button.
+        const head = document.createElement('div');
+        head.className = 'help-title';
+        head.textContent = summary.textContent;
         const close = document.createElement('button');
         close.type = 'button';
         close.className = 'help-close';
         close.textContent = '×';
         close.title = 'Close';
         close.addEventListener('click', () => { d.open = false; show(); });
+        panel.insertBefore(head, panel.firstChild);
         panel.insertBefore(close, panel.firstChild);
         dock.appendChild(panel);
         // On the click itself (the toggle event comes later, after any
         // further click), so the newest one is the one left open.
-        d.querySelector('summary').addEventListener('click', () => {
-            if (!d.open) {
-                for (const o of helps) if (o !== d) o.open = false;
-                statusPane.scrollTop = 0;
-            }
+        summary.addEventListener('click', () => {
+            if (d.open) return;
+            for (const o of helps) if (o !== d) o.open = false;
+            statusPane.scrollTop = 0;
         });
-        d.addEventListener('toggle', show);
+        d.addEventListener('toggle', () => {
+            show();
+            if (!d.open) return;
+            summary.dataset.where = twoColumns.matches ? '→ shown on the right' : '↓ shown below the editor';
+            // A flash where it opened draws the eye there.
+            panel.classList.remove('flash');
+            void panel.offsetWidth;
+            panel.classList.add('flash');
+            if (!twoColumns.matches) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
     }
     show();
 }
