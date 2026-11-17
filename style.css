@@ -6,8 +6,9 @@ body {
     color: #333;
 }
 
+/* Use the width of a full HD screen; only very wide ones get margins. */
 .container {
-    max-width: 1400px;
+    max-width: 2200px;
     margin: 0 auto;
     padding: 20px;
 }
@@ -31,6 +32,22 @@ header {
     min-width: 0;
     display: flex;
     flex-direction: column;
+    /* A pane of its own that stays on screen while the page scrolls, so
+       the program stays beside the timing chart and the rest of the State
+       panel. What does not fit scrolls inside it. */
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
+    max-height: 100vh;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    box-sizing: border-box;
+    padding-right: 6px;
+}
+
+/* Keep their sizes in the height-limited pane: it scrolls instead. */
+.editor-section > * {
+    flex-shrink: 0;
 }
 
 .status-section {
@@ -1022,6 +1039,15 @@ button:disabled {
 
     .main-content {
         flex-direction: column;
+    }
+
+    /* One column: the editor is just the top of the page. */
+    .editor-section {
+        position: static;
+        align-self: stretch;
+        max-height: none;
+        overflow: visible;
+        padding-right: 0;
     }
 
     .code-view {
