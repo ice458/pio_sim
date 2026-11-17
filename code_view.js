@@ -20,6 +20,11 @@ class CodeView {
         this.errorLine = null;
         this.warningLines = new Set();
         this.stale = false;             // source edited since the last assemble
+        // Following the PC stops when the user scrolls away from it, and
+        // resumes on resumeFollow() or when they scroll it back into view.
+        this.followPaused = false;
+        this.autoScrollTop = null;      // scrollTop our own last scroll set
+        this.prevScrollTop = 0;
 
         // Build the view around the textarea.
         const view = document.createElement('div');
@@ -47,6 +52,16 @@ class CodeView {
         view.appendChild(this.gutter);
         view.appendChild(main);
 
+        // Shown while following is paused: back to the PC.
+        this.followButton = document.createElement('button');
+        this.followButton.type = 'button';
+        this.followButton.className = 'code-follow';
+        this.followButton.title = 'Scroll to the PC and follow it again';
+        this.followButton.style.display = 'none';
+        this.followButton.addEventListener('mousedown', e => e.preventDefault());
+        this.followButton.addEventListener('click', () => this.resumeFollow());
+        main.appendChild(this.followButton);
+
         this.note = document.createElement('div');
         this.note.className = 'code-note';
         view.parentNode.insertBefore(this.note, view.nextSibling);
@@ -55,7 +70,7 @@ class CodeView {
         this.layerRows = [];
         this.lineCount = 0;
 
-        textarea.addEventListener('scroll', () => this.syncScroll());
+        textarea.addEventListener('scroll', () => this.onScroll());
         textarea.addEventListener('input', () => this.onInput());
         this.render();
     }
@@ -141,9 +156,50 @@ class CodeView {
         const sel = this.pcMarks.find(m => m.sm === selectedSm);
         this.pcLine = sel ? sel.line : null;
         this.renderMarks();
-        if (follow && this.pcLine && !this.stale && document.activeElement !== this.input) {
+        if (follow && !this.followPaused && this.pcLine && !this.stale && document.activeElement !== this.input) {
             this.scrollToLine(this.pcLine, true);
         }
+        this.updateFollowButton();
+    }
+
+    // ---- following the PC ----------------------------------------------------
+
+    // Follow the PC again and bring it into view.
+    resumeFollow() {
+        this.followPaused = false;
+        if (this.pcLine && !this.stale) this.scrollToLine(this.pcLine, true);
+        this.updateFollowButton();
+    }
+
+    lineVisible(line) {
+        const h = this.rowHeight();
+        const top = (line - 1) * h;
+        return top >= this.input.scrollTop && top + h <= this.input.scrollTop + this.input.clientHeight;
+    }
+
+    // A vertical scroll we did not make is the user's: following pauses
+    // while the PC is out of view, and resumes once they bring it back.
+    onScroll() {
+        this.syncScroll();
+        const top = this.input.scrollTop;
+        if (top === this.prevScrollTop) return;     // sideways only
+        this.prevScrollTop = top;
+        if (top === this.autoScrollTop) return;     // our own
+        this.autoScrollTop = null;
+        if (!this.pcLine || this.stale) return;
+        this.followPaused = !this.lineVisible(this.pcLine);
+        this.updateFollowButton();
+    }
+
+    updateFollowButton() {
+        const show = this.followPaused && this.pcLine && !this.stale;
+        this.followButton.style.display = show ? '' : 'none';
+        if (!show) return;
+        const h = this.rowHeight();
+        const top = (this.pcLine - 1) * h;
+        const where = top < this.input.scrollTop ? '↑ ' : top >= this.input.scrollTop + this.input.clientHeight ? '↓ ' : '';
+        const text = `${where}Follow PC`;
+        if (this.followButton.textContent !== text) this.followButton.textContent = text;
     }
 
     toggleBreakpoint(line) {
@@ -312,6 +368,9 @@ class CodeView {
         const view = this.input.clientHeight - 2 * h;
         if (ifNeeded && top >= this.input.scrollTop && top <= this.input.scrollTop + view) return;
         this.input.scrollTop = Math.max(0, top - this.input.clientHeight / 3);
+        // Remember where we put it (the browser may clamp the value), so
+        // the scroll event this causes is not taken for the user's.
+        this.autoScrollTop = this.input.scrollTop;
         this.syncScroll();
     }
 }

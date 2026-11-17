@@ -292,6 +292,15 @@ btnAssemble.addEventListener('click', assembleAndReset);
 btnStep.addEventListener('click', step);
 btnRunStop.addEventListener('click', toggleRunStop);
 btnReset.addEventListener('click', reset);
+// Asking to execute means wanting to see where: the editor follows the PC
+// again if it had stopped because the user scrolled away. Stopping a run
+// does not: that is often to look at what they scrolled to.
+for (const b of [btnAssemble, btnStep, btnReset]) {
+    b.addEventListener('click', () => codeView.resumeFollow());
+}
+btnRunStop.addEventListener('click', () => {
+    if (btnRunStop.textContent === 'Stop') codeView.resumeFollow();
+});
 
 btnBypassAll.addEventListener('click', () => {
     emulator.inputSyncBypass = 0xFFFFFFFF;
@@ -750,7 +759,11 @@ function selectSm(i, refresh = true) {
     loadControls();
     lastTxMessage = 'Nothing put yet';
     lastRxMessage = 'Not read yet';
-    if (refresh) updateUI();
+    if (refresh) {
+        updateUI();
+        // Choosing a state machine means wanting to see its PC.
+        codeView.resumeFollow();
+    }
 }
 
 // Several state machines are in play: show the summary and the tabs.
