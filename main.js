@@ -1134,9 +1134,27 @@ function applyProgramConfig(program) {
     });
 }
 
-// A breakpoint stops the run when any state machine reaches its address.
+// A breakpoint stops the run when any state machine is about to execute
+// the instruction there (not while the one before it is still in its delay,
+// with PC already pointing at it).
 function atBreakpoint() {
-    return emulator.enabledSms().some(sm => breakpoints.has(sm.pc));
+    return emulator.enabledSms().some(sm => sm.delay === 0 && breakpoints.has(sm.pc));
+}
+
+// A state machine's state for its badge: running, stalled, ... and while an
+// instruction's delay runs, which delay cycle the next step is.
+function smBadge(sm) {
+    if (!sm.enabled) return { cls: 'off', text: 'OFF', title: '' };
+    if (emulator.error && sm.status === 'error') return { cls: 'error', text: 'ERROR', title: '' };
+    if (sm.status === 'running' && sm.delay > 0) {
+        const k = sm.delayTotal - sm.delay + 1;
+        const of = sm.delayPc !== null ? `address ${sm.delayPc}` : 'an EXEC\'d instruction';
+        return {
+            cls: 'delay', text: `DELAY ${k}/${sm.delayTotal}`,
+            title: `The next step is delay cycle ${k} of ${sm.delayTotal} of ${of}. PC already shows the next instruction, as SMx_ADDR does on the chip.`
+        };
+    }
+    return { cls: sm.status, text: sm.status.toUpperCase(), title: '' };
 }
 
 function toggleRunStop() {
@@ -1283,15 +1301,18 @@ function updateSmPanels() {
         const row = smRows[i];
         row.tr.classList.toggle('selected', i === sel);
         row.tr.classList.toggle('off', !sm.enabled);
-        const status = sm.enabled ? sm.status : 'off';
+        const badge = smBadge(sm);
+        // The instruction the next step belongs to (in a delay, the one
+        // whose delay it is), as the editor highlights it; PC is the chip's.
         const values = sm.enabled
-            ? [`SM${i}`, sm.program ? sm.program.name : '', null, sm.pc, instrText(sm.pc), hex8(sm.x), hex8(sm.y), sm.cycles]
+            ? [`SM${i}`, sm.program ? sm.program.name : '', null, sm.pc, instrText(sm.activeAddr()), hex8(sm.x), hex8(sm.y), sm.cycles]
             : [`SM${i}`, '', null, '', '', '', '', ''];
         values.forEach((v, k) => { if (k !== 2) setText(row.cells[k], v); });
         row.cells[1].title = values[1];
         row.cells[4].title = values[4];
-        row.status.className = `sm-status ${status}`;
-        setText(row.status, status.toUpperCase());
+        row.status.className = `sm-status ${badge.cls}`;
+        row.status.title = badge.title;
+        setText(row.status, badge.text);
 
         for (const tabs of smTabs) {
             const b = tabs[i];
@@ -1312,9 +1333,10 @@ function updateUI(isStep = false) {
     let displayStatus = emulator.error ? 'ERROR' : (runInterval ? 'RUNNING' : (isStep ? 'STEP' : 'STOPPED'));
     statusIndicator.textContent = displayStatus;
 
-    const smState = emulator.error && sm.status === 'error' ? 'error' : (sm.enabled ? sm.status : 'off');
-    regSmStatus.className = `sm-status ${smState}`;
-    setText(regSmStatus, smState.toUpperCase());
+    const badge = smBadge(sm);
+    regSmStatus.className = `sm-status ${badge.cls}`;
+    regSmStatus.title = badge.title;
+    setText(regSmStatus, badge.text);
 
     if (displayStatus === 'RUNNING') {
         statusIndicator.style.backgroundColor = '#4caf50';
@@ -1445,7 +1467,12 @@ function updateUI(isStep = false) {
 
     // The selected state machine's line is highlighted in the editor, and
     // every running one is marked in the gutter when there are several.
-    codeView.setPcs(emulator.enabledSms().map(s => ({ sm: s.index, pc: s.pc })), sel, true);
+    // The line each state machine's next step belongs to: in a delay, the
+    // instruction whose delay it is (each line is lit 1 + delay steps).
+    codeView.setPcs(emulator.enabledSms().map(s => ({
+        sm: s.index, pc: s.activeAddr(),
+        delay: s.delay > 0 && s.delayPc !== null ? { k: s.delayTotal - s.delay + 1, n: s.delayTotal } : null
+    })), sel, true);
 
     drawTimingChart();
 }

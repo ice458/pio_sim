@@ -148,7 +148,8 @@ class CodeView {
 
     // Each running state machine's PC, and the selected one's.
     setPcs(marks, selectedSm, follow) {
-        this.pcMarks = marks.map(m => ({ sm: m.sm, line: this.addrToLine.get(m.pc) })).filter(m => m.line !== undefined);
+        this.pcMarks = marks.map(m => ({ sm: m.sm, line: this.addrToLine.get(m.pc), delay: m.delay || null }))
+            .filter(m => m.line !== undefined);
         // The PC mark column is as wide as the marks it may need: one per
         // running state machine, none with a single one.
         const slots = marks.length > 1 ? marks.length : 0;
@@ -315,9 +316,21 @@ class CodeView {
                 atLine.get(m.line).push(m.sm);
             }
         }
+        // A line whose delay the next step is: say so after its text.
+        const delayNotes = new Map();
+        if (!this.stale) {
+            for (const m of this.pcMarks) {
+                if (!m.delay) continue;
+                const who = several ? `SM${m.sm} ` : '';
+                const prev = delayNotes.get(m.line);
+                const text = `${who}delay ${m.delay.k}/${m.delay.n}`;
+                delayNotes.set(m.line, prev ? `${prev}, ${text}` : text);
+            }
+        }
         this.layerRows.forEach((l, i) => {
             const line = i + 1;
             const sms = atLine.get(line) || [];
+            this.setDelayNote(l, line, delayNotes.get(line));
             l.classList.toggle('bp', this.breakpointLines.has(line));
             l.classList.toggle('pc', !several && sms.length > 0);
             l.classList.toggle('pc-sel', several && !this.stale && line === this.pcLine);
@@ -346,6 +359,34 @@ class CodeView {
                 mark.addEventListener('click', () => this.onSelectSm(m.sm));
                 g.querySelector('.g-pcs').appendChild(mark);
             }
+        }
+    }
+
+    // The note after a line's text while one of its delay cycles is next;
+    // the row goes back to what render() made when there is none.
+    setDelayNote(row, line, text) {
+        const shown = row.dataset.delayNote || '';
+        if ((text || '') === shown) return;
+        row.dataset.delayNote = text || '';
+        const lines = this.lines();
+        if (text) {
+            const ghost = document.createElement('span');
+            ghost.className = 'l-ghost';
+            ghost.textContent = lines[line - 1] || '';
+            const note = document.createElement('span');
+            note.className = 'l-note l-delay';
+            note.textContent = `  \u25C2 ${text}`;
+            row.replaceChildren(ghost, note);
+        } else if (this.lineNotes.has(line) && !this.stale) {
+            const ghost = document.createElement('span');
+            ghost.className = 'l-ghost';
+            ghost.textContent = lines[line - 1] || '';
+            const note = document.createElement('span');
+            note.className = 'l-note';
+            note.textContent = this.lineNotes.get(line);
+            row.replaceChildren(ghost, note);
+        } else {
+            row.textContent = '\u200b';
         }
     }
 

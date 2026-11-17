@@ -80,6 +80,7 @@ Separately, the loopback delay was measured with MicroPython for clock dividers 
 
 The simulator follows the chips.
 
+- **PC during a delay.** The datasheets do not say what `SMx_ADDR` shows while an instruction's delay runs. Measured on both chips, it already shows the next instruction: with a loop of `nop`, `nop [31]`, `nop [15]`, it reads the first address for 16 cycles, the second for 1 and the third for 32. The simulator's PC does the same; the editor highlights the instruction whose delay is running, so each line stays lit for 1 + delay steps (issue #4).
 - **Delay on an EXEC instruction.** The datasheet says the delay of `out exec` / `mov exec` is ignored. On both chips it is not: `out exec, 16 [5]` runs the executed instruction 5 cycles later.
 - **IRQ set and clear on the same cycle.** The datasheet does not say what happens when one state machine sets a flag and another clears it on the same cycle. On both chips the set wins.
 - **Input latency.** The RP2350 datasheet gives no cycle count for a state machine seeing its own output, and the RP2040 one gives 2 system clocks with the input synchroniser bypassed and 4 with it engaged. Measured, that holds on both chips for IN PINS, WAIT PIN, WAIT GPIO, MOV x, PINS and, on RP2350, WAIT JMPPIN.

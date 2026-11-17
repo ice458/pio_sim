@@ -80,6 +80,8 @@ class PioStateMachine {
         // RX FIFO storage, used as four registers in the put/get FIFO modes.
         this.rxRegs = [0, 0, 0, 0];
         this.delay = 0;
+        this.delayTotal = 0;        // the delay those cycles count down from
+        this.delayPc = null;        // address of the instruction whose delay runs
         // Instruction latched by OUT EXEC / MOV EXEC, run on the next cycle.
         this.execLatch = null;
         this.irqWaitStalled = false; // sticky while an IRQ wait is stalling
@@ -258,6 +260,13 @@ class PioStateMachine {
         return level < this.statusN ? 0xFFFFFFFF : 0;
     }
 
+    // The instruction the next cycle belongs to: during a delay the one
+    // whose delay it is, otherwise the one at PC. (PC itself already
+    // points past an instruction whose delay is running.)
+    activeAddr() {
+        return this.delay > 0 && this.delayPc !== null ? this.delayPc : this.pc;
+    }
+
     // Run one state machine cycle. Throws on an error.
     cycle() {
         // Delay cycles are idle. Autopull can still refill the OSR in the
@@ -330,6 +339,11 @@ class PioStateMachine {
         if (instr.delay > 0) {
             // Delay only applies after a successful (non-stalled) execution.
             this.delay = instr.delay;
+            this.delayTotal = instr.delay;
+            // Whose delay it is: PC moves on below, as SMx_ADDR does on the
+            // chip (measured: it shows the next instruction during a delay).
+            // An EXEC'd instruction has no address of its own.
+            this.delayPc = fromLatch ? null : this.pc;
         }
 
         if (this.pcOverride !== null) {

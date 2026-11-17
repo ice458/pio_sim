@@ -463,6 +463,11 @@ body.resizing * {
     font-style: italic;
 }
 
+/* After a line whose delay cycle the next step is. */
+.l-note.l-delay {
+    color: #d7ba7d;
+}
+
 textarea.code-input {
     position: absolute;
     inset: 0;
@@ -1149,6 +1154,7 @@ button:disabled {
 
 .sm-status.running { background-color: #4caf50; }
 .sm-status.stalled { background-color: #ff9800; }
+.sm-status.delay { background-color: #7e57c2; }
 .sm-status.error { background-color: #f44336; }
 .sm-status.stopped, .sm-status.off { background-color: #9e9e9e; }
 
