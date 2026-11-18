@@ -32,7 +32,7 @@ You can use the live version hosted here:
 The emulator follows the PIO chapters of the RP2040 and RP2350 datasheets, and the assembler follows `pioasm` from the pico-sdk. Cycle timing has also been compared with a real RP2040 and RP2350 (a per-cycle pin trace and the final state of about 40 test programs, captured on the chip); where the hardware and the datasheet disagree, the simulator follows the hardware. **[HARDWARE_VERIFICATION.md](HARDWARE_VERIFICATION.md)** lists what was checked, where the chips and the datasheets differ, and what is not simulated.
 
 - **Settings start at the hardware reset values.** In particular OUT Count is 0, so `out pins` writes nothing until you set it, as on a real chip before the C setup code runs. Set the controls the way your `sm_config_*` calls would, or put the settings in the source with `.in` / `.out` / `.set` / `.fifo` / `.mov_status` or a `config` pragma.
-- **Input latency.** A pin reaches the state machine 1 system clock late when its synchronizer is bypassed and 3 through the 2-flipflop synchronizer (the reset default). A state machine sees its own outputs 2 / 4 system clocks later, the same on RP2040 and RP2350.
+- **Input latency.** A pin reaches the state machine 1 system clock late when its synchronizer is bypassed and 3 through the 2-flipflop synchronizer (the reset default). Bypass it per GPIO with Alt+click in the GPIO panel, or `; #pragma pio_sim input_sync_bypass` in the source. A state machine sees its own outputs 2 / 4 system clocks later, the same on RP2040 and RP2350.
 - **JMP PIN and the Chip setting.** JMP PIN sees a pin sooner than the other inputs, and differently on each chip: a state machine's own output 1 / 3 system clocks later on RP2040, 2 / 3 on RP2350 (measured; the datasheets do not say). Choose the chip next to "Load Example", or put `; #pragma pio_sim chip rp2040` in the source. With RP2040 chosen, RP2350-only features give a warning.
 - **Stepping and delays.** One step is one cycle. The editor highlights the instruction the next step belongs to, so an instruction with a delay `[n]` stays lit for 1 + n steps, marked "delay k/n" on its line. The PC register, like `SMx_ADDR` on the chip (measured), already shows the next instruction during a delay.
 - **Clock divider.** One step is one state machine cycle. With a divider (the "Clock div" control, `.clock_div`, or `config clkdiv`), the input path still runs on the system clock, so input latency counted in state machine cycles gets shorter: at 2 the program sees its own output 1 / 2 cycles later, at 4 and above 1 / 1. Fractional dividers spread the extra clocks with a running total, as the hardware does.
@@ -125,6 +125,14 @@ Syntax: `config <name> <value> [<name> <value> ...]`
 | `clkdiv` | 1-65535, fractions such as `2.5` allowed (1/256 steps) |
 
 `; #pragma pio_sim chip rp2040` (or `rp2350`) selects the chip whose timing to follow, as the Chip control does.
+
+`; #pragma pio_sim input_sync_bypass ...` sets the PIO block's `INPUT_SYNC_BYPASS` register: which GPIOs skip the input synchroniser, as Alt+click in the GPIO panel does. It applies to the whole block, not one state machine. Give GPIO numbers and ranges, one mask in hex or binary, `all` or `none`:
+
+```
+; #pragma pio_sim input_sync_bypass 0 2-5      ; GPIO 0, 2, 3, 4 and 5
+; #pragma pio_sim input_sync_bypass 0x3D       ; the same, as the register value
+; #pragma pio_sim input_sync_bypass all
+```
 
 Settings the source does not name keep whatever the controls show. A `config` pragma overrides a directive (`.out`, `.in`, ...) that sets the same thing.
 

@@ -559,7 +559,8 @@ counted:
 
 ; GPIO 0 follows a few clocks late: an input passes the 2-flipflop
 ; synchroniser, and a pin write reaches the pad on the next clock.
-; Alt+click GPIO 5 in the GPIO panel to bypass its synchroniser.`
+; Alt+click GPIO 5 in the GPIO panel to bypass its synchroniser, or put
+; '; #pragma pio_sim input_sync_bypass 5' in the source.`
     },
     pulse_width: {
         group: 'Basics', label: 'Pulse width meter (wait, jmp pin)',
@@ -1086,6 +1087,11 @@ function assembleAndReset() {
         if (program.chip) {
             cfgChip.value = program.chip;
             emulator.chip = program.chip;
+        }
+        // INPUT_SYNC_BYPASS from the source; without the pragma the GPIO
+        // panel keeps what it shows.
+        if (program.inputSyncBypass !== null && program.inputSyncBypass !== undefined) {
+            emulator.inputSyncBypass = program.inputSyncBypass >>> 0;
         }
         showWarnings(program);
         codeView.setWarnings(program.warnings.map(w => w.line));

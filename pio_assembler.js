@@ -155,6 +155,7 @@ class PioAssembler {
         this.globalPragmas = [];
         this.warnings = [];             // [{ line, message }]: assembled anyway
         this.chip = null;               // from `; #pragma pio_sim chip`
+        this.inputSyncBypass = null;    // from `; #pragma pio_sim input_sync_bypass`
         this.states = [];               // finished programs
         this.inProgram = false;
         this.defaultPioVersion = 1;
@@ -1026,6 +1027,7 @@ class PioAssembler {
             irqEvents,
             warnings: this.warnings,
             chip: this.chip,
+            inputSyncBypass: this.inputSyncBypass,
             programMap: result[0].programMap,
             programs: result,
             memory,
@@ -1267,6 +1269,7 @@ class PioAssembler {
             case 'config': this.pragmaConfig(tokens, out.config, out.configSeen, out); break;
             case 'sm': this.pragmaSm(tokens, out.smAssign); break;
             case 'dma': this.pragmaDma(body, out); break;
+            case 'input_sync_bypass': this.pragmaSyncBypass(tokens); break;
             case 'chip': {
                 // chip rp2040|rp2350: whose timing to follow.
                 const chip = (tokens[1] || '').toLowerCase();
@@ -1278,8 +1281,42 @@ class PioAssembler {
                 break;
             }
             default:
-                throw new Error(`#pragma pio_sim: unknown pragma '${tokens[0] || ''}' (expected pin, irq, config, sm, dma or chip)`);
+                throw new Error(`#pragma pio_sim: unknown pragma '${tokens[0] || ''}' (expected pin, irq, config, sm, dma, input_sync_bypass or chip)`);
         }
+    }
+
+    // input_sync_bypass: the PIO block's INPUT_SYNC_BYPASS register, which
+    // GPIOs skip the 2-flipflop input synchroniser (1 system clock of input
+    // latency instead of 3). For the whole block, not one state machine.
+    //   input_sync_bypass <gpio | first-last> ...   e.g. 0 2-5
+    //   input_sync_bypass 0x3D | 0b111101            the register value
+    //   input_sync_bypass all | none
+    pragmaSyncBypass(tokens) {
+        const usage = `expected '; #pragma pio_sim input_sync_bypass <gpio>|<first>-<last> ...', a mask such as 0x3D, 'all' or 'none'`;
+        if (this.inputSyncBypass !== null) throw new Error(`#pragma pio_sim: input_sync_bypass given twice`);
+        const args = tokens.slice(1);
+        if (args.length === 0) throw new Error(`#pragma pio_sim: ${usage}`);
+        let mask = 0;
+        const word = args.length === 1 ? args[0].toLowerCase() : null;
+        if (word === 'all') {
+            mask = 0xFFFFFFFF;
+        } else if (word === 'none') {
+            mask = 0;
+        } else if (word !== null && /^0[xb]/.test(word)) {
+            // One hex or binary number: the register value itself.
+            mask = this.pragmaNumber(args[0], 'mask', usage);
+            if (mask > 0xFFFFFFFF) throw new Error(`#pragma pio_sim: input_sync_bypass mask ${args[0]} does not fit in 32 bits`);
+        } else {
+            for (const a of args) {
+                const range = a.match(/^(\w+)-(\w+)$/);
+                const lo = this.pragmaNumber(range ? range[1] : a, 'GPIO number', usage);
+                const hi = range ? this.pragmaNumber(range[2], 'GPIO number', usage) : lo;
+                if (lo > 31 || hi > 31) throw new Error(`#pragma pio_sim: GPIO ${Math.max(lo, hi)} out of range 0-31`);
+                if (hi < lo) throw new Error(`#pragma pio_sim: GPIO range ${a} runs backwards`);
+                for (let g = lo; g <= hi; g++) mask |= 1 << g;
+            }
+        }
+        this.inputSyncBypass = mask >>> 0;
     }
 
     // sm: which program a state machine runs.

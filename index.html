@@ -211,6 +211,8 @@
                     <code>fifo</code> (<code>txrx</code>, <code>tx</code>, <code>rx</code>, <code>txput</code>, <code>txget</code>, <code>putget</code>),
                     <code>clkdiv</code> (1-65535, e.g. <code>2.5</code>).
                     <code>; #pragma pio_sim chip rp2040</code> (or <code>rp2350</code>) selects the chip whose timing to follow.
+                    <code>; #pragma pio_sim input_sync_bypass 0 2-5</code> sets <code>INPUT_SYNC_BYPASS</code> (which GPIOs skip the input synchroniser, for the whole block):
+                    GPIO numbers and ranges, one mask such as <code>0x3D</code>, <code>all</code> or <code>none</code>.
                     Settings the source does not name keep whatever the controls show.
                     Before the first <code>.program</code> a <code>config</code> line applies to every state machine;
                     inside a program, to the state machines running it; <code>config sm &lt;n&gt; ...</code> to that one only.
