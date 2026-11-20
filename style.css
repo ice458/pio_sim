@@ -555,6 +555,35 @@ body.multi-sm .sm-scope {
     margin-right: 16px;
 }
 
+/* Scroll bar under the timing chart's plot: back through the history. */
+.chart-scroll {
+    overflow-x: auto;
+    overflow-y: hidden;
+    height: 14px;
+    scrollbar-color: #9aa3ab transparent;
+}
+
+.chart-scroll > div {
+    height: 1px;
+}
+
+#timing-chart {
+    cursor: grab;
+}
+
+#timing-chart.panning {
+    cursor: grabbing;
+}
+
+.chart-latest {
+    float: right;
+    margin-right: 16px;
+    padding: 2px 10px;
+    font-size: 0.65em;
+    font-weight: normal;
+    border-radius: 10px;
+}
+
 .chart-legend {
     display: flex;
     flex-wrap: wrap;

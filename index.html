@@ -551,8 +551,14 @@
                             <option value="500">500</option>
                         </select> clocks</label>
                     <label class="chart-span" title="Mark every pin read by jmp pin and wait ... pin / gpio / jmppin, not only those tagged with '; #pragma pio_sim tag_pin_sample'">
-                        <input type="checkbox" id="timing-mark-reads"> Mark all pin reads</label></h3>
+                        <input type="checkbox" id="timing-mark-reads"> Mark all pin reads</label>
+                    <button type="button" class="chart-latest" id="timing-latest" style="display: none;"
+                        title="Back to the latest clocks, following them as they come">Latest &#x21E5;</button></h3>
                 <canvas id="timing-chart" width="600" height="200"></canvas>
+                <!-- Scrolls the chart back through the kept history (the plot area's width). -->
+                <div class="chart-scroll" id="timing-scroll" title="Scroll back through the history; drag the chart or Shift+wheel too">
+                    <div id="timing-scroll-inner"></div>
+                </div>
                 <div class="chart-legend">
                     <span><i class="lg-line lg-driven"></i>driven by PIO (output)</span>
                     <span><i class="lg-line lg-input"></i>input: level on the pin</span>

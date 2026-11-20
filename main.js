@@ -158,6 +158,14 @@ const timingIrqButtons = [];
 let timingCursorX = null;   // mouse x on the timing chart, in canvas pixels
 const timingSpan = document.getElementById('timing-span');
 const timingMarkReads = document.getElementById('timing-mark-reads');
+const timingScroll = document.getElementById('timing-scroll');
+const timingScrollInner = document.getElementById('timing-scroll-inner');
+const timingLatest = document.getElementById('timing-latest');
+// The chart's window: null follows the latest step; otherwise the clock of
+// the last step shown, which stays put while the program runs on.
+let timingViewEnd = null;
+let timingScrollSet = null;     // scrollLeft the chart itself last set
+const CHART_LABEL_W = 104;      // the row labels' gutter, in canvas pixels
 let lastReadMarks = [];     // the pin read marks last drawn (for tests)
 
 const TIMING_REGS = [
@@ -1620,16 +1628,16 @@ function drawTimingChart() {
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, width, height);
 
-    if (history.length === 0 || totalRows === 0) return;
-
     const maxCycles = parseInt(timingSpan.value) || 50;
-    const startIndex = Math.max(0, history.length - maxCycles);
-    const visibleHistory = history.slice(startIndex);
+    const { start: startIndex, end: endIndex } = timingWindow(maxCycles);
+    updateTimingScroll(maxCycles, endIndex);
+    if (history.length === 0 || totalRows === 0) return;
+    const visibleHistory = history.slice(startIndex, endIndex);
 
     // Row labels get their own gutter on the left, so they never cover the
     // first clocks of a waveform. Everything below is drawn in plot
     // coordinates: x = 0 is the left edge of the plot area.
-    const LABEL_W = 104;
+    const LABEL_W = CHART_LABEL_W;
     const plotW = width - LABEL_W;
     const stepX = plotW / maxCycles;
     ctx.save();
@@ -1845,8 +1853,10 @@ function drawTimingChart() {
         bitRows.forEach((r, i) => { if (r.key === 'pins' || r.key === 'inputs') pinRow.set(r.bit, i); });
         const first = visibleHistory.length ? visibleHistory[0].sysclk : 0;
         // The column showing system clock `s`: the last step at or before it.
+        // The first clock past the window (the next step), when scrolled back.
+        const past = endIndex < history.length ? history[endIndex].sysclk : Infinity;
         const colOf = s => {
-            if (!visibleHistory.length || s < first) return -1;
+            if (!visibleHistory.length || s < first || s >= past) return -1;
             let lo = 0, hi = visibleHistory.length - 1;
             while (lo < hi) {
                 const mid = (lo + hi + 1) >> 1;
@@ -1855,7 +1865,9 @@ function drawTimingChart() {
             return lo;
         };
         const latest = new Map();
-        for (const h of visibleHistory) {
+        // A read is recorded on the step that made it, a few clocks after
+        // the clock it read: look a little past the window's end too.
+        for (const h of history.slice(startIndex, Math.min(history.length, endIndex + 8))) {
             if (!h.reads) continue;
             for (const r of h.reads) {
                 const tagged = r.addr !== null && tags.has(r.addr);
@@ -1957,6 +1969,113 @@ function drawTimingChart() {
     }
 
     ctx.restore();
+}
+
+// ---- scrolling the timing chart through the history ----------------------
+
+// The steps shown, as history indices [start, end): the latest ones, or
+// those up to the clock timingViewEnd. History is one step per clock, in
+// order, so a clock is found by subtraction.
+function timingWindow(span) {
+    const h = emulator.history;
+    const len = h.length;
+    if (len === 0 || (timingViewEnd !== null && timingViewEnd > h[len - 1].clock)) timingViewEnd = null;
+    let end = len;
+    if (timingViewEnd !== null) {
+        end = Math.min(len, Math.max(Math.min(span, len), timingViewEnd - h[0].clock + 1));
+        if (end >= len) timingViewEnd = null;
+    }
+    return { start: Math.max(0, end - span), end };
+}
+
+// Show the window ending at history index `end` (clamped); at the latest
+// step the chart follows again.
+function setTimingEnd(end) {
+    const h = emulator.history;
+    const span = parseInt(timingSpan.value) || 50;
+    end = Math.round(Math.min(h.length, Math.max(Math.min(span, h.length), end)));
+    timingViewEnd = end >= h.length ? null : h[end - 1].clock;
+    drawTimingChart();
+}
+
+// The scroll bar under the plot: as wide as the plot, its content as long
+// as the history in the same scale, scrolled to the window.
+function updateTimingScroll(span, end) {
+    const len = emulator.history.length;
+    const view = timingScroll.clientWidth;
+    timingScroll.style.marginLeft = `${CHART_LABEL_W * canvas.clientWidth / (canvas.width || 1)}px`;
+    timingLatest.style.display = timingViewEnd === null ? 'none' : '';
+    if (!view) return;
+    const total = Math.max(len, span);
+    const inner = Math.max(view, Math.round(view * total / span));
+    if (timingScrollInner.style.width !== `${inner}px`) timingScrollInner.style.width = `${inner}px`;
+    const room = inner - view;
+    const target = room > 0 && len > span ? Math.round(room * (end - span) / (len - span)) : 0;
+    if (Math.abs(timingScroll.scrollLeft - target) >= 1) {
+        timingScroll.scrollLeft = target;
+        timingScrollSet = timingScroll.scrollLeft;
+    }
+}
+
+timingScroll.addEventListener('scroll', () => {
+    // Our own scroll from updateTimingScroll: nothing to do.
+    if (timingScrollSet !== null && Math.abs(timingScroll.scrollLeft - timingScrollSet) < 1) return;
+    timingScrollSet = null;
+    const len = emulator.history.length;
+    const span = parseInt(timingSpan.value) || 50;
+    const room = timingScroll.scrollWidth - timingScroll.clientWidth;
+    if (room <= 0 || len <= span) return;
+    setTimingEnd(span + (len - span) * timingScroll.scrollLeft / room);
+});
+
+timingLatest.addEventListener('click', () => {
+    timingViewEnd = null;
+    drawTimingChart();
+});
+
+// The current window's end, as a history index.
+function timingEnd() {
+    return timingWindow(parseInt(timingSpan.value) || 50).end;
+}
+
+// Sideways wheel (trackpad, or Shift+wheel) over the chart pans it; an
+// upright wheel still scrolls the pane.
+canvas.addEventListener('wheel', e => {
+    const dx = e.shiftKey && !e.deltaX ? e.deltaY : e.deltaX;
+    if (!dx || (!e.shiftKey && Math.abs(e.deltaX) < Math.abs(e.deltaY))) return;
+    e.preventDefault();
+    const span = parseInt(timingSpan.value) || 50;
+    const plot = canvas.clientWidth * (canvas.width - CHART_LABEL_W) / (canvas.width || 1);
+    // A pixel of scrolling is a pixel of the plot, at least one step.
+    const steps = dx * span / Math.max(1, plot);
+    setTimingEnd(timingEnd() + (Math.abs(steps) < 1 ? Math.sign(steps) : steps));
+}, { passive: false });
+
+// Dragging the chart pans it, like grabbing paper.
+{
+    let drag = null;
+    canvas.addEventListener('pointerdown', e => {
+        if (e.button !== 0 || emulator.history.length === 0) return;
+        drag = { x: e.clientX, end: timingEnd(), moved: false };
+        canvas.setPointerCapture(e.pointerId);
+    });
+    canvas.addEventListener('pointermove', e => {
+        if (!drag) return;
+        const span = parseInt(timingSpan.value) || 50;
+        const plot = canvas.clientWidth * (canvas.width - CHART_LABEL_W) / (canvas.width || 1);
+        const dx = e.clientX - drag.x;
+        if (Math.abs(dx) > 3) drag.moved = true;
+        if (drag.moved) {
+            canvas.classList.add('panning');
+            setTimingEnd(drag.end - dx * span / Math.max(1, plot));
+        }
+    });
+    const end = () => {
+        drag = null;
+        canvas.classList.remove('panning');
+    };
+    canvas.addEventListener('pointerup', end);
+    canvas.addEventListener('pointercancel', end);
 }
 
 // The timing chart's cursor follows the mouse.
