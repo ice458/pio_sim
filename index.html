@@ -185,6 +185,14 @@
                     <code>irq set|clear &lt;n&gt; [delay &lt;clocks&gt;] [repeat &lt;clocks&gt;] [count &lt;n&gt;]</code>.
                     The instruction executed on that clock already sees the new value; a real partner's <code>irq</code> on cycle N is seen at N+1, so use <code>delay N+1</code>. The program can still set and clear the flag itself.
                 </p>
+                <p style="margin: 8px 0 0 0;"><strong>Pin read marks</strong>: show in the timing chart the clock whose pin level an instruction read.</p>
+                <pre style="margin: 4px 0; padding: 6px 8px; background: #f5f5f5; overflow-x: auto;">    jmp pin, gate
+; #pragma pio_sim tag_pin_sample A      ; marks the jmp pin above, in lane A (top) .. E (bottom)</pre>
+                <p style="margin: 0;">
+                    <code>tag_pin_sample &lt;A-E&gt;</code> after a <code>jmp pin</code> or <code>wait ... pin</code> / <code>gpio</code> / <code>jmppin</code>:
+                    a dot in the state machine's colour on the pin's row (latest bold, older faded, small while a wait holds).
+                    "Mark all pin reads" above the chart marks every read.
+                </p>
                 <p style="margin: 8px 0 0 0;"><strong>FIFO data (DMA)</strong>: the system's side of the FIFOs, as a DMA channel would do it (the Put / Get buttons by hand).</p>
                 <pre style="margin: 4px 0; padding: 6px 8px; background: #f5f5f5; overflow-x: auto;">; #pragma pio_sim dma put 7 1 1 3 3                ; these words, then nothing
 ; #pragma pio_sim dma put 0xF0F000FF 0x80017FFE loop ; these words over and over
@@ -541,7 +549,9 @@
                             <option value="100">100</option>
                             <option value="200">200</option>
                             <option value="500">500</option>
-                        </select> clocks</label></h3>
+                        </select> clocks</label>
+                    <label class="chart-span" title="Mark every pin read by jmp pin and wait ... pin / gpio / jmppin, not only those tagged with '; #pragma pio_sim tag_pin_sample'">
+                        <input type="checkbox" id="timing-mark-reads"> Mark all pin reads</label></h3>
                 <canvas id="timing-chart" width="600" height="200"></canvas>
                 <div class="chart-legend">
                     <span><i class="lg-line lg-driven"></i>driven by PIO (output)</span>
@@ -549,6 +559,7 @@
                     <span><i class="lg-line lg-latch"></i>written by PIO, not driven (pin is an input; <code>set pindirs</code>)</span>
                     <span><i class="lg-line lg-stim"></i>pragma waveform</span>
                     <span><i class="lg-line lg-irq"></i>IRQ flag</span>
+                    <span><i class="lg-dot"></i>pin read by jmp pin / wait (state machine colour; latest bold, older faded, small while a wait holds)</span>
                 </div>
 
                 <h3>Interrupts (IRQ) <span class="shared-tag multi-sm-only">shared</span></h3>

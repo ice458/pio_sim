@@ -540,6 +540,21 @@ body.multi-sm .sm-scope {
     color: #555;
 }
 
+/* The legend's pin read mark. */
+.lg-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 4px;
+    border-radius: 50%;
+    background-color: #1e88e5;
+    vertical-align: middle;
+}
+
+.chart-span + .chart-span {
+    margin-right: 16px;
+}
+
 .chart-legend {
     display: flex;
     flex-wrap: wrap;

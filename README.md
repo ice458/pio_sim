@@ -12,7 +12,7 @@ A browser-based PIO (Programmable I/O) assembly simulator for the Raspberry Pi P
   - Step-by-step execution debugging
   - Scratch registers (X, Y) and Shift registers (ISR, OSR) states
   - TX / RX FIFO buffers
-  - GPIO pin states and timing charts (pins, IRQ flags and registers; hover for the values at any clock)
+  - GPIO pin states and timing charts (pins, IRQ flags and registers; hover for the values at any clock; marks where `jmp pin` / `wait` read a pin)
 - **Interrupts (IRQ) Monitoring:** Clickable IRQ flags to test wait and set behaviors interactively.
 - **Several state machines:** Up to four state machines on shared instruction memory, GPIOs and IRQ flags, with a summary of all of them and tabs for each one's details and settings.
 - **Simulator pragmas:** Pin waveforms, IRQ events, FIFO data, settings and state machine assignment declared in the source (see below).
@@ -78,6 +78,24 @@ Syntax: `irq set|clear <n> [delay <clocks>] [repeat <clocks>] [count <n>]`
 - The first event is at clock `delay` (default 0). With `repeat` it recurs every that many clocks, forever or `count` times.
 - The instruction executed on that clock already sees the new flag value. A real partner state machine is seen one cycle after it executes `irq`, so a partner instruction on cycle N corresponds to `delay N+1`.
 - The program can still set and clear the flag itself, and so can you by clicking it. Scheduled flags are added to the timing chart.
+
+### Pin read marks
+
+Mark in the timing chart the clock whose pin level an instruction actually read. The input path lags the pin by a few system clocks (see "Input latency" above), so this is not the clock the instruction ran on.
+
+```
+    wait 0 pin 0
+; #pragma pio_sim tag_pin_sample E      ; marks the wait above, in lane E
+    jmp pin, gate
+; #pragma pio_sim tag_pin_sample A      ; marks the jmp pin above, in lane A
+```
+
+Syntax: `tag_pin_sample <A-E>`, on a line after a `jmp pin` or `wait ... pin` / `gpio` / `jmppin`.
+
+- A dot in the state machine's colour sits on the pin's row, at the clock that was read. Lane A is at the top of the row, E at the bottom.
+- Each instruction's latest read is bold, earlier ones faded. While a `wait` holds, each read is a small dot.
+- "Mark all pin reads", above the chart, marks every read without tags: `wait 1` in lane A, `jmp pin` in C, `wait 0` in E.
+- Hovering over the chart lists the reads of that clock.
 
 ### FIFO data (DMA)
 

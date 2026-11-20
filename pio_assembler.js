@@ -895,9 +895,10 @@ class PioAssembler {
         const smAssign = [];
         const smConfig = [];          // per state machine, from `config sm <n>`
         const dma = [];               // `dma` pragmas
+        const tags = [];              // `tag_pin_sample` pragmas
         const globalConfig = {};
         const runPragmas = (list, config, program = null) => {
-            const out = { stimuli, irqEvents, config, configSeen: new Set(), smAssign, smConfig, dma, program };
+            const out = { stimuli, irqEvents, config, configSeen: new Set(), smAssign, smConfig, dma, tags, program };
             for (const p of list) atLine(p.line, () => { this.line = p.line; this.handlePragma(p.body, out); });
         };
         this.symbols = this.globalSymbols;
@@ -976,6 +977,25 @@ class PioAssembler {
         const smConfigs = smPrograms.map((idx, sm) => idx === null ? null
             : Object.assign({}, programs[idx].config, globalConfig, programConfigs[idx], smConfig[sm] ? smConfig[sm].config : {}));
 
+        // Pin read tags: the instruction just above each pragma.
+        const sampleTags = [];
+        for (const g of tags) {
+            atLine(g.line, () => {
+                const above = programs[g.program].programMap.filter(m => m.line < g.line);
+                if (above.length === 0) throw new Error(`#pragma pio_sim: tag_pin_sample needs an instruction above it`);
+                const addr = above[above.length - 1].pc;
+                const instr = memory[addr];
+                const readsPin = instr && ((instr.type === 'JMP' && instr.cond === 'pin')
+                    || (instr.type === 'WAIT' && ['pin', 'gpio', 'jmppin'].includes(instr.source)));
+                if (!readsPin) {
+                    this.warnings.push({ line: g.line, message: `tag_pin_sample: the instruction above (address ${addr}) reads no pin; only jmp pin and wait ... pin / gpio / jmppin are marked` });
+                    return;
+                }
+                if (sampleTags.some(s => s.addr === addr)) throw new Error(`#pragma pio_sim: the instruction at address ${addr} is already tagged`);
+                sampleTags.push({ addr, lane: g.lane, line: g.line });
+            });
+        }
+
         // DMA per state machine: to the one named, to the state machines
         // running the program the pragma is in, or before the first
         // .program, to every state machine that runs a program.
@@ -1033,7 +1053,8 @@ class PioAssembler {
             memory,
             smPrograms,
             smConfigs,
-            smDma
+            smDma,
+            sampleTags
         };
     }
 
@@ -1269,6 +1290,7 @@ class PioAssembler {
             case 'config': this.pragmaConfig(tokens, out.config, out.configSeen, out); break;
             case 'sm': this.pragmaSm(tokens, out.smAssign); break;
             case 'dma': this.pragmaDma(body, out); break;
+            case 'tag_pin_sample': this.pragmaTag(tokens, out); break;
             case 'input_sync_bypass': this.pragmaSyncBypass(tokens); break;
             case 'chip': {
                 // chip rp2040|rp2350: whose timing to follow.
@@ -1281,8 +1303,20 @@ class PioAssembler {
                 break;
             }
             default:
-                throw new Error(`#pragma pio_sim: unknown pragma '${tokens[0] || ''}' (expected pin, irq, config, sm, dma, input_sync_bypass or chip)`);
+                throw new Error(`#pragma pio_sim: unknown pragma '${tokens[0] || ''}' (expected pin, irq, config, sm, dma, input_sync_bypass, tag_pin_sample or chip)`);
         }
+    }
+
+    // tag_pin_sample <A-E>: mark in the timing chart where the instruction
+    // just above reads its pin (jmp pin, wait pin / gpio / jmppin), in
+    // lane A (top of the pin's row) to E (bottom). Resolved to an address
+    // once the programs are laid out.
+    pragmaTag(tokens, out) {
+        const usage = `expected '; #pragma pio_sim tag_pin_sample <A-E>' on the line after a jmp pin or wait ... pin instruction`;
+        const lane = (tokens[1] || '').toUpperCase();
+        if (tokens.length !== 2 || !/^[A-E]$/.test(lane)) throw new Error(`#pragma pio_sim: ${usage}`);
+        if (out.program === null) throw new Error(`#pragma pio_sim: tag_pin_sample must follow an instruction inside a .program`);
+        out.tags.push({ lane, program: out.program, line: this.line });
     }
 
     // input_sync_bypass: the PIO block's INPUT_SYNC_BYPASS register, which

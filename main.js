@@ -157,6 +157,8 @@ const timingIrqOverride = new Map();    // flag -> shown
 const timingIrqButtons = [];
 let timingCursorX = null;   // mouse x on the timing chart, in canvas pixels
 const timingSpan = document.getElementById('timing-span');
+const timingMarkReads = document.getElementById('timing-mark-reads');
+let lastReadMarks = [];     // the pin read marks last drawn (for tests)
 
 const TIMING_REGS = [
     { key: 'pc',  label: 'PC',  format: v => v.toString() },
@@ -285,6 +287,7 @@ for (let i = 0; i < 8; i++) {
 }
 
 timingSpan.addEventListener('change', () => drawTimingChart());
+timingMarkReads.addEventListener('change', () => drawTimingChart());
 
 // ---- the two panes ----------------------------------------------------------
 
@@ -581,12 +584,16 @@ counted:
     set pindirs, 1      ; GPIO 0 as an output
 .wrap_target
     wait 1 pin 0        ; rising edge on GPIO 2 (in_base + 0)
+; Mark in the timing chart where this wait reads GPIO 2 (lane A, top):
+; #pragma pio_sim tag_pin_sample A
     set pins, 1         ; GPIO 0 high: measuring
     mov x, ~null        ; X = 0xFFFFFFFF
 high:
     jmp x-- still       ; count one loop (always goes on to 'still')
 still:
     jmp pin high        ; GPIO 2 (jmp_pin) still high: loop again
+; and where this jmp pin reads it (lane E, bottom):
+; #pragma pio_sim tag_pin_sample E
     set pins, 0         ; pulse over
     mov isr, ~x         ; ISR = loops counted
     push noblock        ; report it
@@ -1822,6 +1829,70 @@ function drawTimingChart() {
         ctx.fillText(reg.label, 5 - LABEL_W, yMid + 4);
     }
 
+    // Pin reads: where jmp pin / wait ... pin read the pin, at the clock
+    // whose level it read (the input path lags the pad). Tagged ones
+    // ('; #pragma pio_sim tag_pin_sample A-E') in their lane, A at the top
+    // of the pin's row to E at the bottom; with "Mark all pin reads", the
+    // rest too (wait 1 in A, jmp pin in C, wait 0 in E). Each instruction's
+    // latest read is bold, earlier ones faded, reads while a wait still
+    // holds small.
+    const readMarks = [];       // { col, row, read, lane } for the cursor too
+    {
+        const tags = new Map(((lastProgram && lastProgram.sampleTags) || []).map(s => [s.addr, s.lane]));
+        const all = timingMarkReads.checked;
+        const pinRow = new Map();
+        // GPIO rows: driven pins ('pins') and waveform-driven ones ('inputs').
+        bitRows.forEach((r, i) => { if (r.key === 'pins' || r.key === 'inputs') pinRow.set(r.bit, i); });
+        const first = visibleHistory.length ? visibleHistory[0].sysclk : 0;
+        // The column showing system clock `s`: the last step at or before it.
+        const colOf = s => {
+            if (!visibleHistory.length || s < first) return -1;
+            let lo = 0, hi = visibleHistory.length - 1;
+            while (lo < hi) {
+                const mid = (lo + hi + 1) >> 1;
+                if (visibleHistory[mid].sysclk <= s) lo = mid; else hi = mid - 1;
+            }
+            return lo;
+        };
+        const latest = new Map();
+        for (const h of visibleHistory) {
+            if (!h.reads) continue;
+            for (const r of h.reads) {
+                const tagged = r.addr !== null && tags.has(r.addr);
+                if (!tagged && !all) continue;
+                const row = pinRow.get(r.gpio);
+                const col = colOf(r.at);
+                if (row === undefined || col < 0) continue;
+                const lane = tagged ? tags.get(r.addr) : (r.kind === 'wait1' ? 'A' : r.kind === 'wait0' ? 'E' : 'C');
+                const key = `${r.sm}:${r.addr}:${r.gpio}`;
+                const m = { col, row, read: r, lane, key };
+                readMarks.push(m);
+                latest.set(key, m);
+            }
+        }
+        const laneStep = Math.min(7, pinRowHeight * 0.22);
+        for (const m of readMarks) {
+            const isLatest = latest.get(m.key) === m;
+            const holding = m.read.kind !== 'jmp' && !m.read.passed;
+            const x = (m.col + 0.5) * stepX;
+            const y = m.row * pinRowHeight + pinRowHeight / 2 + ('ABCDE'.indexOf(m.lane) - 2) * laneStep;
+            const r = holding ? 2 : isLatest ? 4.5 : 3.5;
+            ctx.globalAlpha = isLatest ? 1 : holding ? 0.3 : 0.45;
+            ctx.beginPath();
+            ctx.arc(x, y, r, 0, 2 * Math.PI);
+            ctx.fillStyle = SM_COLORS[m.read.sm];
+            ctx.fill();
+            if (isLatest) {
+                ctx.lineWidth = 1.5;
+                ctx.strokeStyle = '#fff';
+                ctx.stroke();
+            }
+        }
+        ctx.globalAlpha = 1;
+        ctx.lineWidth = 2;
+    }
+    lastReadMarks = readMarks;
+
     // Left edge of the plot area.
     ctx.strokeStyle = '#999';
     ctx.lineWidth = 1;
@@ -1874,6 +1945,15 @@ function drawTimingChart() {
         const clockText = h.sysclk !== undefined && h.sysclk !== h.clock
             ? `clock ${h.clock} (sysclk ${h.sysclk})` : `clock ${h.clock}`;
         box(clockText, 8, !flip);
+        // Pin reads of this clock's level, under the clock.
+        const names = { jmp: 'jmp pin', wait1: 'wait 1', wait0: 'wait 0' };
+        const here = readMarks.filter(m => m.col === col);
+        here.slice(0, 6).forEach((m, k) => {
+            const r = m.read;
+            const line = r.addr !== null ? codeView.addrToLine.get(r.addr) : null;
+            const where = line ? ` (line ${line})` : r.addr === null ? ' (exec)' : '';
+            box(`SM${r.sm} ${names[r.kind]}${where} read GPIO ${r.gpio} = ${r.value}`, 26 + k * 16, !flip);
+        });
     }
 
     ctx.restore();

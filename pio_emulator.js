@@ -283,6 +283,7 @@ class PioStateMachine {
         // An EXEC'd instruction runs from the latch instead of the
         // instruction memory, and does not advance PC (§11.5.7).
         const fromLatch = this.execLatch !== null;
+        this.curAddr = fromLatch ? null : this.pc;   // for recorded pin reads
         const instr = fromLatch ? this.execLatch : this.fetch();
 
         // A stalled instruction is re-executed each cycle; its side-set
@@ -388,7 +389,11 @@ class PioStateMachine {
                 return taken;
             }
             case 'x!=y': return this.x !== this.y;
-            case 'pin': return this.block.getJmpPinState(this.jmpPin) === 1;
+            case 'pin': {
+                const v = this.block.getJmpPinState(this.jmpPin);
+                this.block.notePinRead(this, this.jmpPin, 'jmp', v, 'jmp', v === 1);
+                return v === 1;
+            }
             case '!osre': return this.osrCount < this.effPullThresh();
             default: return false;
         }
@@ -396,13 +401,19 @@ class PioStateMachine {
 
     executeWait(instr) {
         let val = 0;
+        // The GPIO a pin wait reads (null: none, e.g. masked by IN_COUNT).
+        let gpio = null;
         if (instr.source === 'gpio') {
             // Absolute GPIO number; the input mapping is not applied.
             val = this.getPinState(instr.index);
+            gpio = instr.index & 0x1F;
         } else if (instr.source === 'pin') {
             val = (this.readInPins() >>> (instr.index & 0x1F)) & 1;
+            const masked = this.inCount > 0 && this.inCount < 32 && (instr.index & 0x1F) >= this.inCount;
+            if (!masked) gpio = (this.inBase + instr.index) & 0x1F;
         } else if (instr.source === 'jmppin') {
             val = this.getPinState(this.jmpPin + instr.index);
+            gpio = (this.jmpPin + instr.index) & 0x1F;
         } else if (instr.source === 'irq') {
             const { set, bit } = this.irqTarget(instr);
             val = (this.block[set] & bit) ? 1 : 0;
@@ -410,6 +421,9 @@ class PioStateMachine {
             if (instr.polarity === 1 && val === 1) {
                 this.block.irqWrite(set, bit, false);
             }
+        }
+        if (gpio !== null) {
+            this.block.notePinRead(this, gpio, 'input', val, instr.polarity ? 'wait1' : 'wait0', val === instr.polarity);
         }
         return val === instr.polarity;
     }
@@ -889,6 +903,19 @@ class PioEmulator {
         return (this.inputsSeen >>> (pin & 0x1F)) & 1;
     }
 
+    // Record a pin read by `sm` this step: the GPIO, the value, and the
+    // system clock whose pad level it was (`path` 'input' or 'jmp', with
+    // that path's lag), for the timing chart to mark. `kind` is 'jmp',
+    // 'wait1' or 'wait0'; `passed`, whether the jump was taken / the wait
+    // released.
+    notePinRead(sm, gpio, path, value, kind, passed) {
+        const bypassed = (this.inputSyncBypass >>> gpio) & 1;
+        const jmp = PIO_JMP_PIN_LAG[this.chip] || PIO_JMP_PIN_LAG.rp2350;
+        const lag = path === 'jmp' ? (bypassed ? jmp.bypassed : jmp.synced) : (bypassed ? 1 : 3);
+        if (!this.stepReads) this.stepReads = [];
+        this.stepReads.push({ sm: sm.index, addr: sm.curAddr, gpio, value, kind, passed, at: this.sysclk - lag });
+    }
+
     // What JMP PIN observes. Measured, it lags the pad less than the other
     // inputs do, and differently on each chip (PIO_JMP_PIN_LAG). WAIT
     // JMPPIN, despite the name, uses the ordinary input path.
@@ -943,6 +970,7 @@ class PioEmulator {
         if (active.length === 0 || this.instructions.length === 0) return;
 
         const t = this.sysclk;
+        this.stepReads = null;      // pin reads this step (notePinRead)
         // A stimulus owns its pin: re-apply so a manual toggle cannot linger.
         this.applyStimuli(t);
         for (const sm of active) sm.dmaPut();
@@ -993,6 +1021,7 @@ class PioEmulator {
 
         const padEnd = this.getAllPinStates();
         this.history[this.history.length - 1].padEnd = padEnd;
+        if (this.stepReads) this.history[this.history.length - 1].reads = this.stepReads;
         // Keep the latest steps only (the timing chart shows up to 500):
         // at full speed an unbounded history grows by megabytes a second.
         // Trimmed in batches, so it costs next to nothing per step.
