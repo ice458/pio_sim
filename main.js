@@ -2176,6 +2176,7 @@ codeEditor.addEventListener('input', () => {
     } catch (e) {
         // Ignore quota errors.
     }
+    dropShareFragment();
 });
 
 // Loading an example should overwrite persisted code too.
@@ -2185,6 +2186,183 @@ exampleSelect.addEventListener('change', () => {
     } catch (e) {
         // Ignore.
     }
+    dropShareFragment();
+});
+
+// ---- share links -------------------------------------------------------------
+// The source and its settings ride in the URL fragment (#s=...), which the
+// browser never sends to the server: JSON, deflate-raw (native
+// CompressionStream), base64url, as in SymTF. Shared is what reproduces the
+// run from reset: the source, the chip, each state machine's settings that
+// differ from reset (those the source sets come from the source), the
+// INPUT_SYNC_BYPASS mask, breakpoints, the selected state machine and the
+// timing chart's choices. The run itself (clock, registers, history) is not.
+//
+// A link does not overwrite the visitor's own saved source until they edit
+// the shared one; from then on it is theirs, and the fragment is dropped so
+// a reload shows their edits rather than the link again.
+
+const SHARE_PREFIX = '#s=';
+const btnShare = document.getElementById('btn-share');
+
+// The value checks of the config pragma, by setting.
+const SHARE_SETTING_DEFS = {};
+for (const def of Object.values(PioAssembler.CONFIG_PRAGMA)) SHARE_SETTING_DEFS[def.key] = def;
+
+function shareState() {
+    const s = { v: 1, code: codeEditor.value, chip: cfgChip.value };
+    const sms = emulator.sms.map((sm, i) => {
+        const d = {};
+        for (const [key, reset] of Object.entries(DIRECTIVE_SETTINGS)) {
+            if (sm[key] !== reset && !settingsFromDirectives[i].has(key)) d[key] = sm[key];
+        }
+        return d;
+    });
+    if (sms.some(d => Object.keys(d).length)) s.sms = sms;
+    if (emulator.inputSyncBypass >>> 0) s.bypass = emulator.inputSyncBypass >>> 0;
+    if (codeView.breakpointLines.size) s.bp = [...codeView.breakpointLines].sort((a, b) => a - b);
+    if (sel) s.sel = sel;
+    const chart = {};
+    if (selectedTimingPins.size) chart.pins = [...selectedTimingPins].sort((a, b) => a - b);
+    if (selectedTimingRegs.size) chart.regs = TIMING_REGS.map(r => r.key).filter(k => selectedTimingRegs.has(k));
+    if (timingIrqOverride.size) chart.irq = [...timingIrqOverride].map(([flag, shown]) => [flag, shown ? 1 : 0]);
+    if (timingSpan.value !== timingSpan.options[0].value) chart.span = timingSpan.value;
+    if (timingMarkReads.checked) chart.reads = 1;
+    if (Object.keys(chart).length) s.chart = chart;
+    return s;
+}
+
+async function encodeShare(state) {
+    const stream = new Blob([JSON.stringify(state)]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+    const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+    let bin = '';
+    for (const b of bytes) bin += String.fromCharCode(b);
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function decodeShare(text) {
+    const bin = atob(text.replace(/-/g, '+').replace(/_/g, '/'));
+    const bytes = Uint8Array.from(bin, ch => ch.charCodeAt(0));
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return JSON.parse(await new Response(stream).text());
+}
+
+// One setting from a link, only if it is a value the control could hold.
+function setSharedSetting(sm, key, v) {
+    const def = SHARE_SETTING_DEFS[key];
+    if (!def) return;
+    if (def.values) {
+        if (!Object.values(def.values).includes(v)) return;
+    } else {
+        if (typeof v !== 'number' || !(v >= def.min && v <= def.max)) return;
+        if (def.decimal) v = Math.floor(v * 256) / 256;
+        else if (!Number.isInteger(v)) return;
+    }
+    if (key === 'fifoMode') sm.setFifoMode(v);
+    else sm[key] = v;
+}
+
+// Open a shared state: everything not in it goes back to its default.
+function applyShare(s) {
+    if (!s || typeof s !== 'object' || typeof s.code !== 'string') throw new Error('no source in the link');
+    const ints = (a, lo, hi) => (Array.isArray(a) ? a : []).filter(n => Number.isInteger(n) && n >= lo && n <= hi);
+    stop();
+    exampleSelect.value = '';
+    codeView.value = s.code;
+    if (s.chip === 'rp2040' || s.chip === 'rp2350') {
+        cfgChip.value = s.chip;
+        emulator.chip = s.chip;
+    }
+    settingsFromDirectives = [new Set(), new Set(), new Set(), new Set()];
+    emulator.sms.forEach((sm, i) => {
+        Object.assign(sm, PIO_SM_CONFIG_DEFAULTS);
+        sm.setFifoMode('txrx');
+        const d = Array.isArray(s.sms) ? s.sms[i] : null;
+        if (d && typeof d === 'object') for (const [key, v] of Object.entries(d)) setSharedSetting(sm, key, v);
+    });
+    emulator.inputSyncBypass = Number.isInteger(s.bypass) ? s.bypass >>> 0 : 0;
+    sel = Number.isInteger(s.sel) && s.sel >= 0 && s.sel < 4 ? s.sel : 0;
+
+    const chart = s.chart && typeof s.chart === 'object' ? s.chart : {};
+    selectedTimingPins.clear();
+    for (const pin of ints(chart.pins, 0, 31)) selectedTimingPins.add(pin);
+    Array.from(timingPinSelector.children).forEach((el, k) => el.classList.toggle('selected', selectedTimingPins.has(31 - k)));
+    selectedTimingRegs.clear();
+    const regs = Array.isArray(chart.regs) ? chart.regs : [];
+    TIMING_REGS.forEach((r, k) => {
+        if (regs.includes(r.key)) selectedTimingRegs.add(r.key);
+        timingRegSelector.children[k].classList.toggle('selected', selectedTimingRegs.has(r.key));
+    });
+    timingIrqOverride.clear();
+    for (const pair of Array.isArray(chart.irq) ? chart.irq : []) {
+        if (Array.isArray(pair) && Number.isInteger(pair[0]) && pair[0] >= 0 && pair[0] < 8) timingIrqOverride.set(pair[0], !!pair[1]);
+    }
+    timingSpan.value = Array.from(timingSpan.options).some(o => o.value === String(chart.span)) ? String(chart.span) : timingSpan.options[0].value;
+    timingMarkReads.checked = !!chart.reads;
+    timingViewEnd = null;
+
+    assembleAndReset();
+    // Breakpoints go on source lines, and only on instructions.
+    codeView.breakpointLines = new Set(ints(s.bp, 1, 1e6).filter(line => codeView.lineToAddr.has(line)));
+    codeView.renderMarks();
+    codeView.onBreakpointsChanged();
+    selectSm(sel);
+}
+
+// Load the link in the address bar, if any. Returns whether it did.
+async function openShareFragment() {
+    if (!location.hash.startsWith(SHARE_PREFIX)) return false;
+    try {
+        applyShare(await decodeShare(location.hash.slice(SHARE_PREFIX.length)));
+        return true;
+    } catch (e) {
+        console.error(e);
+        errorMessage.textContent = `This share link could not be read (${e.message}); showing your own source instead.`;
+        dropShareFragment();
+        return false;
+    }
+}
+
+// Take the link out of the address bar (the state stays as it is).
+function dropShareFragment() {
+    if (!location.hash.startsWith(SHARE_PREFIX)) return;
+    try {
+        history.replaceState(null, '', location.href.split('#')[0]);
+    } catch (e) {
+        // Some file:// pages refuse; the link stays, which is harmless.
+    }
+}
+
+// A link pasted into the address bar of an open page changes only the hash.
+window.addEventListener('hashchange', () => { openShareFragment(); });
+
+btnShare.addEventListener('click', async () => {
+    const say = text => {
+        btnShare.textContent = text;
+        clearTimeout(btnShare.resetTimer);
+        btnShare.resetTimer = setTimeout(() => { btnShare.textContent = 'Share link'; }, 2000);
+    };
+    let url;
+    try {
+        url = location.href.split('#')[0] + SHARE_PREFIX + await encodeShare(shareState());
+    } catch (e) {
+        errorMessage.textContent = 'Could not make a share link: ' + e.message;
+        return;
+    }
+    try {
+        await navigator.clipboard.writeText(url);
+        say('Copied!');
+    } catch (e) {
+        // No clipboard (an insecure page, or denied): leave it in the
+        // address bar to copy from there.
+        try {
+            history.replaceState(null, '', url);
+            say('Link is in the address bar');
+        } catch (e2) {
+            errorMessage.textContent = 'Could not copy the share link.';
+        }
+    }
 });
 
 assembleAndReset();
+openShareFragment();

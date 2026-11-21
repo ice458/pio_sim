@@ -146,6 +146,11 @@
                 <p>
                     Fully client-side. Up to four state machines run together on shared instruction memory, GPIOs and IRQ flags: put several <code>.program</code> blocks in the source and they go to SM0, SM1, ... (see "Several state machines" under Simulator pragmas). The assembler follows <code>pioasm</code> (expressions, <code>.define</code>, side-set, delays, <code>.word</code>, RP2350 extensions) and the emulator follows the PIO chapters of the RP2040 and RP2350 datasheets. Settings start at the hardware reset values, so set them the way your C setup code would, or with <code>.in</code> / <code>.out</code> / <code>.set</code> / <code>.fifo</code> / <code>.mov_status</code> / <code>.clock_div</code> in the source.
                 </p>
+                <p>
+                    <strong>Share link</strong> (next to Chip) copies a link that opens the source with its settings: the chip, each state machine's settings,
+                    <code>INPUT_SYNC_BYPASS</code>, breakpoints and what the timing chart shows. It is all in the link itself, after the <code>#</code>, so nothing is uploaded.
+                    The run itself is not included; it starts from reset.
+                </p>
                 </div>
             </details>
 
@@ -227,7 +232,7 @@
                 </p>
                 <p style="margin: 8px 0 0 0;"><strong>Several state machines</strong>: each <code>.program</code> is placed in the shared 32-word instruction memory
                     (at its <code>.origin</code>, or else the lowest free addresses; the SDK's <code>pio_add_program()</code> takes the highest, so addresses can differ, not behaviour)
-and runs on SM0, SM1, ... in source order. To choose:</p>
+                    and runs on SM0, SM1, ... in source order. To choose:</p>
                 <pre style="margin: 4px 0; padding: 6px 8px; background: #f5f5f5; overflow-x: auto;">; #pragma pio_sim sm 0 program uart_tx         ; SM0 runs uart_tx
 ; #pragma pio_sim sm 1 program uart_tx         ; so does SM1 ...
 ; #pragma pio_sim config sm 1 out_base 4       ; ... on other pins
@@ -255,6 +260,8 @@ and runs on SM0, SM1, ... in source order. To choose:</p>
                         <option value="rp2350">RP2350 (Pico 2)</option>
                         <option value="rp2040">RP2040 (Pico)</option>
                     </select>
+                    <button id="btn-share" type="button" style="margin-left: 12px;"
+                        title="Copy a link that opens this source with these settings: chip, state machine settings, INPUT_SYNC_BYPASS, breakpoints and timing chart choices. It all rides in the link itself; nothing is uploaded.">Share link</button>
                 </div>
                 <textarea id="code-editor" spellcheck="false">
 .program blink

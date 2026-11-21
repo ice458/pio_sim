@@ -26,6 +26,9 @@ You can use the live version hosted here:
 1. Paste or write your PIO assembly code in the editor on the left.
 2. Use the control buttons (Run, Step, Reset) to execute the code.
 3. Monitor the changes in state machines, FIFOs, and timing diagrams on the right.
+4. To show someone what you see, click **Share link** (next to Chip) and send the link.
+
+The source is saved in the browser as you type. A share link carries the source and its settings: the chip, each state machine's settings that differ from reset (those the source sets itself come from the source), `INPUT_SYNC_BYPASS`, breakpoints, the selected state machine and what the timing chart shows. It is compressed into the URL after `#`, which browsers do not send to the server, so nothing is uploaded. The run itself is not included: the link opens at reset. Opening a link does not overwrite your own saved source until you edit the shared one.
 
 ## How closely it follows the hardware
 
