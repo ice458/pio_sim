@@ -835,6 +835,76 @@ do_zero:
 
 ; SM2 sets flag 7, which no state machine waits on, so the token goes
 ; round once. Click IRQ 4 in the Interrupts panel to send another.`
+    },
+    edge_interleave: {
+        group: 'IRQ and several state machines', label: 'Edge timing to 1 clock (2 interleaved SMs)',
+        code: `; Time an edge to 1 clock with two interleaved state machines.
+; Contributed by gh-jmg: https://github.com/ice458/pio_sim/issues/5
+;
+; A jmp pin loop polls a pin once every 2 clocks. Two copies of it, one
+; clock apart, poll it every clock between them, and the pin read marks
+; (lanes A and B) show whether they really take turns.
+;
+; SM0 turns each falling edge of PPS (GPIO 1) into a 3-clock low pulse,
+; the "needle", on GPIO 4. SM1 and SM2 count X down once per loop while
+; GPIO 4 is high, and push X when they see the needle. Between two pushes,
+; SM1's drop in X plus SM2's drop is the time between the edges in
+; clocks: 15 here (hi 11 + low 4).
+;
+; Try: delete the nop at the start of TimeNeedleO. The two lanes' marks
+; then land on the same clocks and the 1-clock resolution is lost.
+;
+; PPS: high for 11 clocks, low for 4, repeating.
+; #pragma pio_sim pin 1 hi 11 low 4
+; DMA reads the counts from SM1's and SM2's RX FIFOs; they show under them.
+; #pragma pio_sim dma sm 1 get
+; #pragma pio_sim dma sm 2 get
+
+.program PPStoNeedle
+; #pragma pio_sim config in_base 0 sideset_base 4 set_base 4 set_count 1
+.define PPS 1                  ; GPIO 1 (wait pin is relative to in_base)
+.side_set 1
+    set pindirs, 1  side 1     ; GPIO 4 (the needle) as an output, high
+.wrap_target
+    wait 1 pin PPS  side 1     ; PPS high first,
+    wait 0 pin PPS  side 1     ; then its falling edge
+    nop             side 0 [2] ; needle: GPIO 4 low for 3 clocks
+.wrap
+; The needle has to be at least 2 clocks long for a 2-clock poll to see
+; it; 3 gives margin.
+
+.program TimeNeedleE
+; #pragma pio_sim config jmp_pin 4
+.wrap_target
+loopE:
+    jmp x--, testE             ; count (always goes on to testE)
+testE:
+    jmp pin, loopE             ; needle not here yet: poll again, 2 clocks
+; #pragma pio_sim tag_pin_sample A
+    jmp x--, pushE             ; keep counting at the same rate
+pushE:
+    mov isr, x
+    jmp x--, doneE
+doneE:
+    push noblock               ; report X
+.wrap
+
+.program TimeNeedleO
+; #pragma pio_sim config jmp_pin 4
+    nop                        ; start 1 clock after TimeNeedleE
+.wrap_target
+loopO:
+    jmp x--, testO
+testO:
+    jmp pin, loopO
+; #pragma pio_sim tag_pin_sample B
+    jmp x--, pushO
+pushO:
+    mov isr, x
+    jmp x--, doneO
+doneO:
+    push noblock
+.wrap`
     }
 };
 
