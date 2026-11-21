@@ -31,7 +31,7 @@ You can use the live version hosted here:
 
 The emulator follows the PIO chapters of the RP2040 and RP2350 datasheets, and the assembler follows `pioasm` from the pico-sdk. Cycle timing has also been compared with a real RP2040 and RP2350 (a per-cycle pin trace and the final state of about 40 test programs, captured on the chip); where the hardware and the datasheet disagree, the simulator follows the hardware. **[HARDWARE_VERIFICATION.md](HARDWARE_VERIFICATION.md)** lists what was checked, where the chips and the datasheets differ, and what is not simulated.
 
-- **Settings start at the hardware reset values.** In particular OUT Count is 0, so `out pins` writes nothing until you set it, as on a real chip before the C setup code runs. Set the controls the way your `sm_config_*` calls would, or put the settings in the source with `.in` / `.out` / `.set` / `.fifo` / `.mov_status` or a `config` pragma.
+- **Settings start at the hardware reset values.** In particular OUT Count is 0, so `out pins` writes nothing until you set it, as on a real chip before the C setup code runs. Set the controls the way your `sm_config_*` calls would, or put the settings in the source with `.in` / `.out` / `.set` / `.fifo` / `.mov_status` / `.clock_div` or a `config` pragma.
 - **Input latency.** A pin reaches the state machine 1 system clock late when its synchronizer is bypassed and 3 through the 2-flipflop synchronizer (the reset default). Bypass it per GPIO with Alt+click in the GPIO panel, or `; #pragma pio_sim input_sync_bypass` in the source. A state machine sees its own outputs 2 / 4 system clocks later, the same on RP2040 and RP2350.
 - **JMP PIN and the Chip setting.** JMP PIN sees a pin sooner than the other inputs, and differently on each chip: a state machine's own output 1 / 3 system clocks later on RP2040, 2 / 3 on RP2350 (measured; the datasheets do not say). Choose the chip next to "Load Example", or put `; #pragma pio_sim chip rp2040` in the source. With RP2040 chosen, RP2350-only features give a warning.
 - **Stepping and delays.** One step is one cycle. The editor highlights the instruction the next step belongs to, so an instruction with a delay `[n]` stays lit for 1 + n steps, marked "delay k/n" on its line. The PC register, like `SMx_ADDR` on the chip (measured), already shows the next instruction during a delay.
@@ -158,7 +158,7 @@ Scope: before the first `.program`, a `config` line applies to every state machi
 
 ## Several state machines
 
-Put several `.program` blocks in one source, as `pioasm` allows. Each program goes into the shared 32-word instruction memory, at its `.origin` or else the first free addresses in source order, and its jumps and wrap points are relocated. Symbols defined before the first `.program` are global; labels and `.define`s inside a program are its own.
+Put several `.program` blocks in one source, as `pioasm` allows. Each program goes into the shared 32-word instruction memory, at its `.origin` or else the lowest free addresses in source order, and its jumps and wrap points are relocated. The SDK's `pio_add_program()` takes the highest free addresses instead, so without `.origin` the addresses can differ from a real build; the behaviour does not. Symbols defined before the first `.program` are global; labels and `.define`s inside a program are its own.
 
 By default the programs run on SM0, SM1, ... in source order. To choose:
 
@@ -175,7 +175,7 @@ All state machines run on one time line. A step advances to the next system cloc
 
 ## Limitations
 
-- One PIO block. `irq prev` / `irq next` address flags of neighbouring blocks, which exist but nothing else drives; IRQ event pragmas can stand in for them.
+- One PIO block. `irq prev` / `irq next` address the flags of neighbouring blocks. They exist, but only this block's own `irq prev` / `irq next` instructions change them: the IRQ event pragma and the Interrupts panel act on this block's flags 0-7.
 - `OUT_STICKY` / `INLINE_OUT_EN`, GPIOs above 31 (`GPIOBASE`) and system-level interrupts are not modelled. DMA is not either, beyond what the `dma` pragma stands in for.
 - Instructions are accepted without a `.program` line, which `pioasm` would reject.
 

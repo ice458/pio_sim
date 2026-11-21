@@ -144,7 +144,7 @@
                     A web-based emulator for the <strong>RP2040</strong> and <strong>RP2350</strong> Programmable I/O (<strong>PIO</strong>). Test and debug your PIO assembly code directly in the browser with real-time visualization of registers, FIFOs, GPIOs, and timing. 
                 </p>
                 <p>
-                    Fully client-side. Up to four state machines run together on shared instruction memory, GPIOs and IRQ flags: put several <code>.program</code> blocks in the source and they go to SM0, SM1, ... (see "Several state machines" under Simulator pragmas). The assembler follows <code>pioasm</code> (expressions, <code>.define</code>, side-set, delays, <code>.word</code>, RP2350 extensions) and the emulator follows the PIO chapters of the RP2040 and RP2350 datasheets. Settings start at the hardware reset values, so set them the way your C setup code would, or with <code>.in</code> / <code>.out</code> / <code>.set</code> / <code>.fifo</code> / <code>.mov_status</code> in the source.
+                    Fully client-side. Up to four state machines run together on shared instruction memory, GPIOs and IRQ flags: put several <code>.program</code> blocks in the source and they go to SM0, SM1, ... (see "Several state machines" under Simulator pragmas). The assembler follows <code>pioasm</code> (expressions, <code>.define</code>, side-set, delays, <code>.word</code>, RP2350 extensions) and the emulator follows the PIO chapters of the RP2040 and RP2350 datasheets. Settings start at the hardware reset values, so set them the way your C setup code would, or with <code>.in</code> / <code>.out</code> / <code>.set</code> / <code>.fifo</code> / <code>.mov_status</code> / <code>.clock_div</code> in the source.
                 </p>
                 </div>
             </details>
@@ -153,9 +153,9 @@
                 <summary style="cursor: pointer;">Unsupported Features</summary>
                 <div class="help-panel">
                 <ul style="margin: 4px 0 0 1.2em; padding: 0;">
-                    <li>Other PIO blocks: <code>irq prev</code> / <code>irq next</code> flags exist but nothing else drives them</li>
-                    <li><code>OUT_STICKY</code> / <code>INLINE_OUT_EN</code>, GPIOs above 31 (<code>GPIOBASE</code>), system-level interrupts and DMA</li>
-                    <li>Loading at a non-zero offset (<code>.origin</code> is accepted; the program is loaded at address 0)</li>
+                    <li>Other PIO blocks: the <code>irq prev</code> / <code>irq next</code> flags exist, but only this block's own <code>irq prev</code> / <code>irq next</code> instructions change them</li>
+                    <li><code>OUT_STICKY</code> / <code>INLINE_OUT_EN</code>, GPIOs above 31 (<code>GPIOBASE</code>) and system-level interrupts</li>
+                    <li>DMA channels, beyond the <code>dma</code> pragma's filling and emptying of the FIFOs</li>
                 </ul>
                 </div>
             </details>
@@ -226,7 +226,8 @@
                     inside a program, to the state machines running it; <code>config sm &lt;n&gt; ...</code> to that one only.
                 </p>
                 <p style="margin: 8px 0 0 0;"><strong>Several state machines</strong>: each <code>.program</code> is placed in the shared 32-word instruction memory
-                    (at its <code>.origin</code>, or the first free addresses) and runs on SM0, SM1, ... in source order. To choose:</p>
+                    (at its <code>.origin</code>, or else the lowest free addresses; the SDK's <code>pio_add_program()</code> takes the highest, so addresses can differ, not behaviour)
+and runs on SM0, SM1, ... in source order. To choose:</p>
                 <pre style="margin: 4px 0; padding: 6px 8px; background: #f5f5f5; overflow-x: auto;">; #pragma pio_sim sm 0 program uart_tx         ; SM0 runs uart_tx
 ; #pragma pio_sim sm 1 program uart_tx         ; so does SM1 ...
 ; #pragma pio_sim config sm 1 out_base 4       ; ... on other pins

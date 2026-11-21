@@ -114,9 +114,9 @@ The simulator follows the chips.
 
 **Not simulated:**
 
-- Other PIO blocks. `irq prev` / `irq next` address flags that nothing else drives; IRQ pragmas can stand in for them.
+- Other PIO blocks. The flags `irq prev` / `irq next` address exist, but only this block's own `irq prev` / `irq next` instructions change them; IRQ pragmas act on this block's flags only.
 - `OUT_STICKY` and `INLINE_OUT_EN`.
 - GPIOs above 31 (`GPIOBASE`).
-- System-level interrupts and DMA.
+- System-level interrupts. DMA, beyond the `dma` pragma's filling and emptying of the FIFOs (without a real channel's response time).
 - Analog pin behaviour: drive strength, pulls and slew. A pin set as an input reads 0 unless a waveform or a click drives it.
 - Instructions written by the CPU to `SMx_INSTR` while running.
